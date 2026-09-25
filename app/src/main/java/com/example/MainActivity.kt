@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -87,6 +88,8 @@ import android.net.Uri
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationCompat
@@ -728,6 +731,120 @@ fun MainTacticalScreen(
     var isDangerAlert by remember { mutableStateOf(false) }
     var isAutonomousGuardActive by remember { mutableStateOf(true) }
 
+    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
+    var destinationLocation by remember { mutableStateOf<GeoPoint?>(null) }
+
+    // ------------------------------------------------------------------------
+    // TEXT-TO-SPEECH (TTS) DYNAMIC LOCALIZED EMERGENCY VOICE BROADCASTER
+    // ------------------------------------------------------------------------
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    var isTtsReady by remember { mutableStateOf(false) }
+    var isSpeaking by remember { mutableStateOf(false) }
+    var showEmergencyPopup by remember { mutableStateOf(false) }
+
+    DisposableEffect(context) {
+        val speech = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                isTtsReady = true
+            }
+        }
+        tts = speech
+        onDispose {
+            speech.shutdown()
+        }
+    }
+
+    LaunchedEffect(tts) {
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                isSpeaking = true
+            }
+            override fun onDone(utteranceId: String?) {
+                isSpeaking = false
+            }
+            override fun onError(utteranceId: String?) {
+                isSpeaking = false
+            }
+        })
+    }
+
+    // Language Detection based on GPS location coordinates
+    fun detectLanguageFromLocation(location: GeoPoint?): String {
+        if (location != null) {
+            val lat = location.latitude
+            val lon = location.longitude
+            // Odisha, India coordinate bounding box roughly
+            if (lat in 17.0..23.0 && lon in 81.0..88.0) {
+                return "or" // Odia
+            }
+            // General India bounding box
+            if (lat in 8.0..37.0 && lon in 68.0..97.0) {
+                return "hi" // Hindi
+            }
+        }
+        // Fallback to system default language check
+        val sysLang = Locale.getDefault().language
+        if (sysLang.startsWith("or") || sysLang.startsWith("or-")) return "or"
+        if (sysLang.startsWith("hi") || sysLang.startsWith("hi-")) return "hi"
+        return "en" // English fallback
+    }
+
+    // Authoritative emergency broadcast voice engine
+    fun triggerVoiceWarning(warningText: String, langCode: String) {
+        val activeTts = tts ?: return
+        if (!isTtsReady) return
+        val targetLocale = when (langCode) {
+            "or" -> Locale("or", "IN")
+            "hi" -> Locale("hi", "IN")
+            else -> Locale.US
+        }
+        
+        var selectedText = warningText
+        val checkLang = activeTts.setLanguage(targetLocale)
+        if (checkLang == TextToSpeech.LANG_MISSING_DATA || checkLang == TextToSpeech.LANG_NOT_SUPPORTED) {
+            // Fallback chain: Odia -> Hindi -> English
+            if (langCode == "or") {
+                val hindiResult = activeTts.setLanguage(Locale("hi", "IN"))
+                if (hindiResult == TextToSpeech.LANG_MISSING_DATA || hindiResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    activeTts.language = Locale.US
+                    selectedText = "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+                } else {
+                    selectedText = "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
+                }
+            } else if (langCode == "hi") {
+                activeTts.language = Locale.US
+                selectedText = "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+            } else {
+                activeTts.language = Locale.US
+            }
+        }
+        
+        activeTts.setPitch(0.95f) // authoritative slightly lower pitch
+        activeTts.setSpeechRate(0.85f) // slower speed for clear emergency scanning
+        activeTts.speak(selectedText, TextToSpeech.QUEUE_FLUSH, null, "TacticalEmergencyBroadcaster")
+    }
+
+    // Listen to changes in danger state & TTS readiness to DIRECTLY and AUTOMATICALLY speak voice alerts
+    LaunchedEffect(isDangerAlert, isTtsReady) {
+        if (isDangerAlert && isTtsReady) {
+            showEmergencyPopup = true
+            val detectedLang = detectLanguageFromLocation(userLocation)
+            val textToSpeak = when (detectedLang) {
+                "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କา ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+                "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
+                else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+            }
+            delay(800) // Small delay for smooth UI transition
+            triggerVoiceWarning(textToSpeak, detectedLang)
+        } else if (!isDangerAlert) {
+            showEmergencyPopup = false
+            if (isSpeaking) {
+                tts?.stop()
+                isSpeaking = false
+            }
+        }
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ -> }
@@ -740,8 +857,6 @@ fun MainTacticalScreen(
 
     var stormDetail by remember { mutableStateOf(StormDetail()) }
 
-    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
-    var destinationLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var activeTab by remember { mutableIntStateOf(0) }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -1229,7 +1344,7 @@ fun MainTacticalScreen(
                                 elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .padding(bottom = 135.dp, end = 12.dp)
+                                    .padding(bottom = 88.dp, end = 12.dp)
                                     .border(1.5.dp, CyanAccent, CircleShape)
                                     .size(56.dp)
                             ) {
@@ -1242,7 +1357,7 @@ fun MainTacticalScreen(
                             }
 
                             // Interactive Rangefinder Distance Floating HUD Card
-                            if (userLocation != null || destinationLocation != null) {
+                            if (destinationLocation != null) {
                                 val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
 
                                 Surface(
@@ -1251,7 +1366,7 @@ fun MainTacticalScreen(
                                     border = BorderStroke(1.5.dp, WarningAmber),
                                     modifier = Modifier
                                         .align(Alignment.BottomStart)
-                                        .padding(start = 12.dp, bottom = 135.dp)
+                                        .padding(start = 12.dp, bottom = 88.dp)
                                         .width(260.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp)) {
@@ -1390,7 +1505,7 @@ fun MainTacticalScreen(
                                 BottomControlHUD(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        .padding(horizontal = 12.dp, vertical = 4.dp),
                                     data = data,
                                     currentIndex = currentFrameIndex,
                                     unlockedMaxIndex = unlockedMaxIndex,
@@ -2218,6 +2333,34 @@ fun MainTacticalScreen(
         }
     }
 
+    // Active Real-Time Emergency Voice & Visual Broadcaster Popup
+    EmergencyWarningPopup(
+        isVisible = showEmergencyPopup,
+        onDismissRequest = { 
+            showEmergencyPopup = false 
+            if (isSpeaking) {
+                tts?.stop()
+                isSpeaking = false
+            }
+        },
+        userLocation = userLocation,
+        langCode = detectLanguageFromLocation(userLocation),
+        isSpeaking = isSpeaking,
+        onTriggerVoice = {
+            val detectedLang = detectLanguageFromLocation(userLocation)
+            val textToSpeak = when (detectedLang) {
+                "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+                "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
+                else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+            }
+            triggerVoiceWarning(textToSpeak, detectedLang)
+        },
+        onStopVoice = {
+            tts?.stop()
+            isSpeaking = false
+        }
+    )
+
     // About Developer Dialog (Tactical Glassmorphic Modal)
     if (showDeveloperDialog) {
         AlertDialog(
@@ -2702,6 +2845,34 @@ fun TacticalGeospatialViewport(
         }
     }
 
+    // Thread-safe and leak-proof state management for the radar overlay
+    var radarOverlay by remember { mutableStateOf<TilesOverlay?>(null) }
+
+    DisposableEffect(host, framePath) {
+        var provider: MapTileProviderBasic? = null
+        var overlay: TilesOverlay? = null
+
+        if (framePath != null) {
+            val radarSource = XYTileSource(
+                "RainViewerRadar",
+                0, 18, 256, "/2/1_1.png",
+                arrayOf("$host$framePath/256/")
+            )
+            provider = MapTileProviderBasic(context, radarSource)
+            overlay = TilesOverlay(provider, context).apply {
+                loadingBackgroundColor = android.graphics.Color.TRANSPARENT
+                loadingLineColor = android.graphics.Color.TRANSPARENT
+            }
+        }
+
+        radarOverlay = overlay
+
+        onDispose {
+            provider?.detach()
+            overlay?.onDetach(null)
+        }
+    }
+
     LaunchedEffect(panOffsetX, panOffsetY, stormDetail) {
         if (panOffsetX == 0f && panOffsetY == 0f) {
             mapView.controller.animateTo(GeoPoint(25.7617, -80.1918))
@@ -2759,18 +2930,10 @@ fun TacticalGeospatialViewport(
             }
             mv.overlays.add(MapEventsOverlay(receiver))
 
-            if (framePath != null) {
-                val radarSource = XYTileSource(
-                    "RainViewerRadar",
-                    0, 18, 256, "/2/1_1.png",
-                    arrayOf("$host$framePath/256/")
-                )
-                val radarProvider = MapTileProviderBasic(context, radarSource)
-                val radarOverlay = TilesOverlay(radarProvider, context).apply {
-                    loadingBackgroundColor = android.graphics.Color.TRANSPARENT
-                    loadingLineColor = android.graphics.Color.TRANSPARENT
-                }
-                mv.overlays.add(radarOverlay)
+            // Add the cached thread-safe radar overlay if it exists
+            val currentRadar = radarOverlay
+            if (currentRadar != null) {
+                mv.overlays.add(currentRadar)
             }
 
             if (showStormTrack) {
@@ -2907,14 +3070,17 @@ fun TacticalGeospatialViewport(
             if (userLocation != null) {
                 val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
                 
-                val rangeLine = Polyline(mv).apply {
-                    setPoints(listOf(userLocation, eyeGeo))
-                    color = 0xFF00E5FF.toInt() // CyanAccent (Blue laser for user)
-                    width = 4.5f
-                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
-                    outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 10f), 0f)
+                // Draw user-to-eye laser line ONLY if custom destination is active
+                if (destinationLocation != null) {
+                    val rangeLine = Polyline(mv).apply {
+                        setPoints(listOf(userLocation, eyeGeo))
+                        color = 0xFF00E5FF.toInt() // CyanAccent (Blue laser for user)
+                        width = 4.5f
+                        outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                        outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 10f), 0f)
+                    }
+                    mv.overlays.add(rangeLine)
                 }
-                mv.overlays.add(rangeLine)
 
                 val userMarker = Marker(mv).apply {
                     position = userLocation
@@ -3374,6 +3540,308 @@ fun OverlayToggleRow(
     }
 }
 
+// --- EMERGENCY WEATHER VOICE WARNING POPUP ---
+@Composable
+fun EmergencyWarningPopup(
+    isVisible: Boolean,
+    onDismissRequest: () -> Unit,
+    userLocation: GeoPoint?,
+    langCode: String,
+    isSpeaking: Boolean,
+    onTriggerVoice: () -> Unit,
+    onStopVoice: () -> Unit
+) {
+    if (!isVisible) return
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val borderAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "borderAlpha"
+    )
+
+    val waveHeight1 by infiniteTransition.animateFloat(
+        initialValue = 4f,
+        targetValue = 24f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "wave1"
+    )
+    val waveHeight2 by infiniteTransition.animateFloat(
+        initialValue = 6f,
+        targetValue = 32f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "wave2"
+    )
+    val waveHeight3 by infiniteTransition.animateFloat(
+        initialValue = 3f,
+        targetValue = 20f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "wave3"
+    )
+
+    val stateName = when (langCode) {
+        "or" -> "ODISHA (ଓଡ଼ିଶା)"
+        "hi" -> "INDIA (NATIONWIDE)"
+        else -> "GLOBAL / LOCAL REGION"
+    }
+
+    val displayLang = when (langCode) {
+        "or" -> "ODIA (ଓଡ଼ିଆ)"
+        "hi" -> "HINDI (हिन्दी)"
+        else -> "ENGLISH (US/UK)"
+    }
+
+    val warningTitle = when (langCode) {
+        "or" -> "⚠️ ଅତି ଜରୁରୀ ସୂଚନା (RED ALERT)"
+        "hi" -> "⚠️ अत्यधिक गंभीर चेतावनी (RED ALERT)"
+        else -> "⚠️ SEVERE EMERGENCY ALERT (RED ALERT)"
+    }
+
+    val warningTextMsg = when (langCode) {
+        "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+        "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
+        else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+    }
+
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = Color(0xFB0A0E17),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(2.dp, AlertRed.copy(alpha = borderAlpha)),
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Glow alert header icon
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(AlertRed.copy(alpha = 0.15f), CircleShape)
+                        .border(1.5.dp, AlertRed, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Severe Alert",
+                        tint = AlertRed,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = warningTitle,
+                    color = AlertRed,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // GPS Location Data & detected parameters card
+                Surface(
+                    color = Color(0xFF131824),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, SurfaceBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "GPS SCAN:",
+                                color = TextMuted,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                if (userLocation != null) {
+                                    "${String.format("%.3f", userLocation.latitude)}°N, ${String.format("%.3f", userLocation.longitude)}°W"
+                                } else {
+                                    "OBTAINING CURRENT GPS..."
+                                },
+                                color = CyanAccent,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "DETECTED STATE:",
+                                color = TextMuted,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                stateName,
+                                color = Color.White,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "LOCAL LANGUAGE:",
+                                color = TextMuted,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                displayLang,
+                                color = UnlockedGreen,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Dynamic Speech translated warning block
+                Text(
+                    text = warningTextMsg,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Waveform indicator
+                if (isSpeaking) {
+                    Row(
+                        modifier = Modifier.height(40.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight1)).background(AlertRed, RoundedCornerShape(2.dp)))
+                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight2)).background(AlertRed, RoundedCornerShape(2.dp)))
+                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight3)).background(AlertRed, RoundedCornerShape(2.dp)))
+                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight2)).background(AlertRed, RoundedCornerShape(2.dp)))
+                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight1)).background(AlertRed, RoundedCornerShape(2.dp)))
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
+                // Interactive Audio broadcast speaker button
+                Button(
+                    onClick = {
+                        if (isSpeaking) {
+                            onStopVoice()
+                        } else {
+                            onTriggerVoice()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSpeaking) AlertRed else AlertRed.copy(0.2f),
+                        contentColor = if (isSpeaking) Color.White else AlertRed
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.5.dp, AlertRed),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = "Voice"
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isSpeaking) {
+                                when (langCode) {
+                                    "or" -> "ସ୍ଵର ବନ୍ଦ କରନ୍ତୁ"
+                                    "hi" -> "आवाज बंद करें"
+                                    else -> "STOP VOICE BROADCAST"
+                                }
+                            } else {
+                                when (langCode) {
+                                    "or" -> "🔊 ଆଲର୍ଟ୍ ସ୍ଵର ଶୁଣନ୍ତୁ"
+                                    "hi" -> "🔊 अलर्ट आवाज सुनें"
+                                    else -> "🔊 LISTEN VOICE BROADCAST"
+                                }
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Dismiss Button
+                TextButton(
+                    onClick = onDismissRequest,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = when (langCode) {
+                            "or" -> "ସୂଚନା ବନ୍ଦ କରନ୍ତୁ"
+                            "hi" -> "चेतावनी बंद करें"
+                            else -> "DISMISS ALERT"
+                        },
+                        color = TextMuted,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
 // --- BOTTOM CONTROL HUD ---
 @Composable
 fun BottomControlHUD(
@@ -3393,12 +3861,13 @@ fun BottomControlHUD(
 
     Surface(
         color = SurfaceCard,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, SurfaceBorder),
-        shadowElevation = 12.dp,
+        shadowElevation = 10.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            // Row 1: Header (Metadata on Left, Compact Unlock Action on Right)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3409,42 +3878,96 @@ fun BottomControlHUD(
                         imageVector = if (currentFrame?.isNowcast == true) Icons.Default.TrendingUp else Icons.Default.History,
                         contentDescription = "Status",
                         tint = if (currentFrame?.isNowcast == true) WarningAmber else CyanAccent,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = currentFrame?.timeLabel ?: "LIVE",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontFamily = FontFamily.Monospace
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (currentIndex <= unlockedMaxIndex) "UNLOCKED" else "LOCKED",
-                        color = if (currentIndex <= unlockedMaxIndex) UnlockedGreen else AlertRed,
+                        text = "${currentIndex + 1}/${data.frames.size} FRAMES",
+                        color = TextMuted,
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier
-                            .background(
-                                color = if (currentIndex <= unlockedMaxIndex) UnlockedGreen.copy(0.15f) else AlertRed.copy(0.15f),
-                                shape = RoundedCornerShape(4.dp)
-                            )
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                        fontFamily = FontFamily.Monospace
                     )
                 }
 
-                Text(
-                    text = "${currentIndex + 1} / ${data.frames.size} FRAMES",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+                // Compact Unlock Button or Badge to save vertical space
+                if (hasMoreLocked) {
+                    val buttonEnabled = cooldownSeconds == 0
+                    Surface(
+                        color = if (buttonEnabled) CyanAccent else Color(0xFF1E2836),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .clickable(enabled = buttonEnabled) { onUnlockClicked() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .background(if (buttonEnabled) Color.Black else TextMuted, RoundedCornerShape(3.dp))
+                                    .padding(horizontal = 3.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    "AD",
+                                    color = if (buttonEnabled) CyanAccent else Color.Black,
+                                    fontSize = 7.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = if (buttonEnabled) Icons.Default.LockOpen else Icons.Default.Lock,
+                                contentDescription = "Unlock",
+                                tint = if (buttonEnabled) Color.Black else TextMuted,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = if (cooldownSeconds > 0) "${cooldownSeconds}s" else "UNLOCK +15M",
+                                color = if (buttonEnabled) Color.Black else TextMuted,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .background(UnlockedGreen.copy(0.12f), RoundedCornerShape(6.dp))
+                            .border(1.dp, UnlockedGreen.copy(0.3f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Complete",
+                            tint = UnlockedGreen,
+                            modifier = Modifier.size(11.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            "ALL FORECASTS UNLOCKED",
+                            color = UnlockedGreen,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
+            // Row 2: Player Control Button + Integrated Frame Timeline Bars
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -3452,22 +3975,23 @@ fun BottomControlHUD(
                 IconButton(
                     onClick = onPlayPauseToggle,
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(34.dp)
                         .background(CyanAccent, CircleShape)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = "Play/Pause",
-                        tint = Color.Black
+                        tint = Color.Black,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(36.dp)
+                        .height(28.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxSize(),
@@ -3486,8 +4010,8 @@ fun BottomControlHUD(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(if (isCurrent) 28.dp else 18.dp)
-                                    .clip(RoundedCornerShape(3.dp))
+                                    .height(if (isCurrent) 18.dp else 10.dp)
+                                    .clip(RoundedCornerShape(2.dp))
                                     .background(barColor)
                                     .clickable { onFrameSelected(idx) },
                                 contentAlignment = Alignment.Center
@@ -3497,93 +4021,11 @@ fun BottomControlHUD(
                                         imageVector = Icons.Default.Lock,
                                         contentDescription = "Locked",
                                         tint = Color.White,
-                                        modifier = Modifier.size(10.dp)
+                                        modifier = Modifier.size(8.dp)
                                     )
                                 }
                             }
                         }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (hasMoreLocked) {
-                val buttonEnabled = cooldownSeconds == 0
-
-                Button(
-                    onClick = onUnlockClicked,
-                    enabled = buttonEnabled,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CyanAccent,
-                        disabledContainerColor = SurfaceBorder
-                    ),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .background(WarningAmber, RoundedCornerShape(4.dp))
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                "AD",
-                                color = Color.Black,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Black
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = Icons.Default.LockOpen,
-                            contentDescription = "Unlock",
-                            tint = if (buttonEnabled) Color.Black else TextMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (cooldownSeconds > 0) {
-                                "ANTI-SPAM COOLDOWN (${cooldownSeconds}s)"
-                            } else {
-                                "UNLOCK NEXT +15 MINS FORECAST"
-                            },
-                            color = if (buttonEnabled) Color.Black else TextMuted,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(UnlockedGreen.copy(0.15f), RoundedCornerShape(8.dp))
-                        .border(1.dp, UnlockedGreen.copy(0.4f), RoundedCornerShape(8.dp))
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Complete",
-                            tint = UnlockedGreen,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            "ALL 15-MIN RADAR FORECASTS UNLOCKED",
-                            color = UnlockedGreen,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
                     }
                 }
             }
