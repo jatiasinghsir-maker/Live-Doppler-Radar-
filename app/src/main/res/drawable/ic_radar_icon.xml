@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Radar outer sweeping rings -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 54,18 A 36,36 0 1,1 54,90 A 36,36 0 1,1 54,18 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#00E5FF" />
+        
+    <!-- Hurricane Swirl Arms & Eye (Vibrant Alert Red and Cyan theme) -->
+    <!-- Center Eye (Solid circle with a cutout or glowing center) -->
+    <path
+        android:fillColor="#FF3B30"
+        android:pathData="M 54,44 A 10,10 0 1,1 54,64 A 10,10 0 1,1 54,44 Z" />
+        
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M 54,49 A 5,5 0 1,1 54,59 A 5,5 0 1,1 54,49 Z" />
+
+    <!-- Spiral Arm 1: Sweeps from bottom left, up around the top right -->
+    <path
+        android:fillColor="#FF3B30"
+        android:pathData="M 54,44 C 42,44 32,54 32,66 C 32,74 38,82 46,84 C 40,78 38,70 42,62 C 46,54 54,52 54,44 Z" />
+
+    <!-- Spiral Arm 2: Sweeps from top right, down around the bottom left -->
+    <path
+        android:fillColor="#FF3B30"
+        android:pathData="M 54,64 C 66,64 76,54 76,42 C 76,34 70,26 62,24 C 68,30 70,38 66,46 C 62,54 54,56 54,64 Z" />
+
+    <!-- Sleek radar crosshairs/sweeper line -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 54,54 L 80,28"
+        android:strokeWidth="3.0"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round" />
+        
+</vector>
