@@ -819,13 +819,28 @@ fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit)
                     val loc = lm.getLastKnownLocation(provider)
                     if (loc != null) {
                         onLocationFound(GeoPoint(loc.latitude, loc.longitude))
-                        return
+                        // Try requesting a fresh update too, but return last known immediately for speed
                     }
+
+                    // Request a single fresh update to guarantee location is fetched on first tap
+                    val listener = object : android.location.LocationListener {
+                        override fun onLocationChanged(location: android.location.Location) {
+                            onLocationFound(GeoPoint(location.latitude, location.longitude))
+                            try {
+                                lm.removeUpdates(this)
+                            } catch (e: Exception) {}
+                        }
+                        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
+                    }
+                    lm.requestLocationUpdates(provider, 0L, 0f, listener, context.mainLooper)
+                    return
                 }
             }
         }
     } catch (e: Exception) {
-        Log.e("LocationTracker", "Error reading last location: ${e.message}")
+        Log.e("LocationTracker", "Error reading location: ${e.message}")
     }
     // Miami, Florida default fallback coordinate
     onLocationFound(GeoPoint(25.7617, -80.1918))
@@ -1121,6 +1136,11 @@ fun MainTacticalScreen(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            requestDeviceLocation(context) { geo ->
+                userLocation = geo
+            }
+        }
         coroutineScope.launch(Dispatchers.IO) {
             try {
                 val url = URL(
@@ -1273,10 +1293,10 @@ fun MainTacticalScreen(
         bottomBar = {
             Column {
                 NavigationBar(
-                    containerColor = Color(0xFF0F1622),
+                    containerColor = Color(0xFF07111C), // dark navy/black tactical
                     contentColor = CyanAccent,
                     tonalElevation = 8.dp,
-                    modifier = Modifier.fillMaxWidth().height(64.dp)
+                    modifier = Modifier.fillMaxWidth().height(68.dp)
                 ) {
                     NavigationBarItem(
                         selected = activeTab == 0,
@@ -1284,11 +1304,11 @@ fun MainTacticalScreen(
                         label = { Text("RADAR MAP", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
                         icon = { Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Black,
+                            selectedIconColor = CyanAccent,
                             selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent,
-                            unselectedIconColor = TextMuted,
-                            unselectedTextColor = TextMuted
+                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
+                            unselectedIconColor = Color(0xFF5E7388),
+                            unselectedTextColor = Color(0xFF5E7388)
                         )
                     )
                     NavigationBarItem(
@@ -1297,11 +1317,11 @@ fun MainTacticalScreen(
                         label = { Text("TELEMETRY", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
                         icon = { Icon(Icons.Default.Assessment, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Black,
+                            selectedIconColor = CyanAccent,
                             selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent,
-                            unselectedIconColor = TextMuted,
-                            unselectedTextColor = TextMuted
+                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
+                            unselectedIconColor = Color(0xFF5E7388),
+                            unselectedTextColor = Color(0xFF5E7388)
                         )
                     )
                     NavigationBarItem(
@@ -1310,11 +1330,11 @@ fun MainTacticalScreen(
                         label = { Text("SURVIVAL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
                         icon = { Icon(Icons.Default.AssignmentTurnedIn, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Black,
+                            selectedIconColor = CyanAccent,
                             selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent,
-                            unselectedIconColor = TextMuted,
-                            unselectedTextColor = TextMuted
+                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
+                            unselectedIconColor = Color(0xFF5E7388),
+                            unselectedTextColor = Color(0xFF5E7388)
                         )
                     )
                 }
@@ -1502,9 +1522,10 @@ fun MainTacticalScreen(
                                 val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
 
                                 Surface(
-                                    color = Color(0xEE0B121F),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.5.dp, WarningAmber),
+                                    color = Color(0xDD07111C), // Translucent dark glass navy
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.5f)),
+                                    shadowElevation = 6.dp,
                                     modifier = Modifier
                                         .align(Alignment.BottomStart)
                                         .padding(start = 16.dp, bottom = 148.dp)
@@ -1681,6 +1702,50 @@ fun MainTacticalScreen(
                                                 fontFamily = FontFamily.Monospace
                                             )
                                         }
+                                    }
+                                }
+                            }
+
+                            // Compact "● ⚠ SEVERE ALERT ACTIVE" Floating HUD Badge near lower-left portion of the map
+                            if (isDangerAlert) {
+                                Surface(
+                                    color = Color(0xDD07111C), // Translucent dark tactical panel
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.2.dp, AlertRed),
+                                    shadowElevation = 8.dp,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(
+                                            start = 16.dp, 
+                                            bottom = if (destinationLocation != null) 300.dp else 148.dp
+                                        )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(AlertRed)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Severe Alert Active",
+                                            tint = AlertRed,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "SEVERE ALERT ACTIVE",
+                                            color = AlertRed,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Black,
+                                            fontFamily = FontFamily.Monospace,
+                                            letterSpacing = 0.5.sp
+                                        )
                                     }
                                 }
                             }
@@ -3108,13 +3173,14 @@ fun TopHUDBar(
     )
 
     Surface(
-        color = SurfaceCard,
-        shadowElevation = 8.dp,
+        color = Color(0xE607111C), // Dark translucent navy
+        shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
+        shadowElevation = 10.dp,
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .height(72.dp)
-            .border(width = 1.dp, color = SurfaceBorder)
+            .height(82.dp)
     ) {
         Row(
             modifier = Modifier
@@ -3124,9 +3190,18 @@ fun TopHUDBar(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Tactical Target Radar Icon
+                Icon(
+                    imageVector = Icons.Default.Radar,
+                    contentDescription = null,
+                    tint = CyanAccent,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                // Pulsing Green Online Indicator
                 Box(
                     modifier = Modifier
-                        .size(10.dp)
+                        .size(8.dp)
                         .clip(CircleShape)
                         .background(
                             if (isLoading) WarningAmber else UnlockedGreen.copy(alpha = alphaPulse)
@@ -3138,13 +3213,14 @@ fun TopHUDBar(
                         "TACTICAL RADAR v5.0",
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.5.sp
                     )
                     Text(
                         "FRAME: $frameTime",
                         color = CyanAccent,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
@@ -3152,10 +3228,11 @@ fun TopHUDBar(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // CAT-4 HELENE red storm status badge
                 Box(
                     modifier = Modifier
                         .background(AlertRed.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-                        .border(1.dp, AlertRed.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                        .border(1.2.dp, AlertRed.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
                         .clickable { onStormClick() }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
@@ -3164,14 +3241,14 @@ fun TopHUDBar(
                             imageVector = Icons.Default.Storm,
                             contentDescription = "Storm",
                             tint = AlertRed,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             "CAT-4 HELENE",
                             color = AlertRed,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -3179,24 +3256,36 @@ fun TopHUDBar(
 
                 Spacer(modifier = Modifier.width(10.dp))
 
-                IconButton(onClick = onRefresh, modifier = Modifier.size(40.dp)) {
+                IconButton(
+                    onClick = onRefresh,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(Color(0xFF141F2E), RoundedCornerShape(8.dp))
+                        .border(1.dp, CyanAccent.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                ) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Refresh",
                         tint = CyanAccent,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 // TOP-RIGHT APP BAR: Clean vector person icon ONLY (no real image/photo)
-                IconButton(onClick = onDeveloperClick, modifier = Modifier.size(40.dp)) {
+                IconButton(
+                    onClick = onDeveloperClick,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(Color(0xFF141F2E), RoundedCornerShape(8.dp))
+                        .border(1.dp, CyanAccent.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                ) {
                     Icon(
                         imageVector = Icons.Default.Person,
                         contentDescription = "About Developer",
                         tint = CyanAccent,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -3709,52 +3798,54 @@ fun RadarIntensityLegend(modifier: Modifier = Modifier) {
 @Composable
 fun StationTelemetryBadge(modifier: Modifier = Modifier) {
     Surface(
-        color = SurfaceCard.copy(alpha = 0.92f),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, SurfaceBorder),
+        color = Color(0xDD07111C), // Translucent dark glass navy
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
+        shadowElevation = 4.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Text(
                 "GRID DATA",
-                color = TextMuted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
+                color = CyanAccent.copy(alpha = 0.8f),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.5.sp
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 "25.76°N, 80.19°W",
                 color = CyanAccent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold,
                 fontFamily = FontFamily.Monospace
             )
             Text(
-                "GULF-DOPPLER #04",
-                color = Color.White.copy(alpha = 0.9f),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = FontFamily.Monospace
-            )
-            
-            Spacer(modifier = Modifier.height(10.dp))
-            HorizontalDivider(color = SurfaceBorder, thickness = 1.dp)
-            Spacer(modifier = Modifier.height(10.dp))
-            
-            Text(
-                "INTENSITY (dBZ)",
-                color = TextMuted,
+                "RADAR: GULF-DOPPLER #04",
+                color = Color.White.copy(alpha = 0.85f),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             )
-            Spacer(modifier = Modifier.height(6.dp))
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = CyanAccent.copy(alpha = 0.2f), thickness = 1.dp)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                "INTENSITY (dBZ)",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(4.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
                     .background(
                         Brush.horizontalGradient(
                             listOf(
@@ -3825,13 +3916,14 @@ fun TacticalSensorsHUD(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Temperature Card
+        // TEMPERATURE CARD
         Surface(
-            color = SurfaceCard.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, CyanAccent.copy(alpha = 0.4f)),
+            color = Color(0xDD07111C), // Translucent dark glass navy
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
+            shadowElevation = 4.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -3839,36 +3931,38 @@ fun TacticalSensorsHUD(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Default.Thermostat,
+                    imageVector = Icons.Default.Thermostat,
                     contentDescription = null,
                     tint = CyanAccent,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
                         text = "TEMPERATURE",
-                        color = TextMuted,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        color = CyanAccent.copy(alpha = 0.8f),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.5.sp
                     )
                     Text(
                         text = "${String.format(Locale.US, "%.1f", temperature)}°C",
                         color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace
                     )
                 }
             }
         }
 
-        // Wind Card
+        // WIND SENSOR CARD
         Surface(
-            color = SurfaceCard.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.5f)),
+            color = Color(0xDD07111C), // Translucent dark glass navy
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.2.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.5f)),
+            shadowElevation = 4.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -3877,16 +3971,16 @@ fun TacticalSensorsHUD(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF16202C))
-                        .border(1.dp, CyanAccent.copy(alpha = 0.3f), CircleShape),
+                        .background(Color(0xFF0F1622))
+                        .border(1.dp, if (isDanger) AlertRed.copy(alpha = 0.5f) else WarningAmber.copy(alpha = 0.4f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Navigation,
                         contentDescription = "Wind Direction",
-                        tint = WarningAmber,
+                        tint = if (isDanger) AlertRed else WarningAmber,
                         modifier = Modifier
                             .size(18.dp)
                             .rotate(windDirection)
@@ -3895,23 +3989,25 @@ fun TacticalSensorsHUD(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "WIND SPEED",
-                        color = TextMuted,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        text = "WIND: SPEED",
+                        color = if (isDanger) AlertRed.copy(alpha = 0.8f) else WarningAmber.copy(alpha = 0.8f),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.5.sp
                     )
                     Text(
                         text = "${String.format(Locale.US, "%.1f", windSpeed)} km/h",
-                        color = if (isDanger) AlertRed else WarningAmber,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
+                        color = if (isDanger) AlertRed else Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
                         text = "DIR: ${String.format(Locale.US, "%.0f", windDirection)}° ${getCardinalDirection(windDirection)}",
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                 }
@@ -3941,15 +4037,16 @@ fun FloatingLayerControls(
     onBasemapClick: () -> Unit
 ) {
     Surface(
-        color = Color(0xDB0A101A), // Translucent dark tactical panel
+        color = Color(0xE607111C), // Translucent dark tactical panel
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, SurfaceBorder),
+        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
+        shadowElevation = 8.dp,
         modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             LayerFabButton(
                 icon = Icons.Default.WaterDrop,
@@ -4000,14 +4097,14 @@ fun LayerFabButton(
 ) {
     Box(
         modifier = Modifier
-            .width(52.dp)
-            .height(58.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isActive) activeColor.copy(alpha = 0.15f) else Color(0xFF141C26))
+            .width(58.dp)
+            .height(60.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (isActive) activeColor.copy(alpha = 0.15f) else Color(0xFF0F1622))
             .border(
-                1.dp,
-                if (isActive) activeColor else SurfaceBorder,
-                RoundedCornerShape(12.dp)
+                1.2.dp,
+                if (isActive) activeColor else Color(0xFF2C384A),
+                RoundedCornerShape(14.dp)
             )
             .clickable { onClick() },
         contentAlignment = Alignment.Center
@@ -4018,17 +4115,17 @@ fun LayerFabButton(
             modifier = Modifier.fillMaxSize().padding(2.dp)
         ) {
             Icon(
-                icon,
+                imageVector = icon,
                 contentDescription = label,
-                tint = if (isActive) activeColor else TextMuted,
-                modifier = Modifier.size(20.dp)
+                tint = if (isActive) activeColor else Color(0xFF5E7388),
+                modifier = Modifier.size(22.dp)
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                label,
-                color = if (isActive) activeColor else TextMuted,
-                fontSize = 7.5.sp,
-                fontWeight = FontWeight.Bold,
+                text = label,
+                color = if (isActive) activeColor else Color(0xFF5E7388),
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
                 textAlign = TextAlign.Center
             )
@@ -4484,9 +4581,9 @@ fun BottomControlHUD(
     val hasMoreLocked = unlockedMaxIndex < data.frames.size - 1
 
     Surface(
-        color = SurfaceCard,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, SurfaceBorder),
+        color = Color(0xEE07111C), // Translucent dark tactical panel
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.5f)),
         shadowElevation = 10.dp,
         modifier = modifier.fillMaxWidth()
     ) {
