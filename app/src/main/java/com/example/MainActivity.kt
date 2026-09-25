@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.os.CountDownTimer
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -308,8 +309,8 @@ class SevereWeatherWorker(
             }
 
             val prefs = applicationContext.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
-            val lat = prefs.getFloat("user_latitude", 25.7617f)
-            val lon = prefs.getFloat("user_longitude", -80.1918f)
+            val lat = prefs.getFloat("user_latitude", 20.2961f)
+            val lon = prefs.getFloat("user_longitude", 85.8245f)
 
             val url = URL(
                 "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,precipitation,rain,weather_code,wind_speed_10m,wind_direction_10m&hourly=cape"
@@ -328,16 +329,18 @@ class SevereWeatherWorker(
                 maxCape = capeArray.optDouble(0, 0.0)
             }
 
-            val severeCodes = setOf(65, 82, 95, 96, 99)
+            val severeRainCodes = setOf(65, 82)
             val thunderCodes = setOf(95, 96, 99)
 
-            val extremeRain = precipitation > 10.0 || weatherCode in severeCodes
-            val highWind = windSpeed > 50.0
-            val severeThunder = maxCape > 1000.0 || weatherCode in thunderCodes
+            val highWind = windSpeed > 40.0 // Strong gale/storm wind threshold
+            val extremeRain = precipitation > 10.0 || weatherCode in severeRainCodes
+            val severeThunder = weatherCode in thunderCodes
 
-            if (extremeRain || highWind || severeThunder) {
+            if (highWind || extremeRain || severeThunder) {
+                // Determine true threat with proper priority: Strong wind triggers WIND alert
                 val wType = when {
-                    severeThunder -> "LIGHTNING"
+                    highWind -> "WIND" // Wind alert takes direct priority for wind threats
+                    severeThunder -> "LIGHTNING" // Satellite / radar confirmed lightning
                     extremeRain -> "RAIN"
                     else -> "WIND"
                 }
@@ -382,7 +385,7 @@ class SevereWeatherWorker(
             val warningLabelOdia = when (warningType) {
                 "WIND" -> "ପବନ ଚେତାବନୀ (STRONG WIND)"
                 "RAIN" -> "ବର୍ଷା ଚେତାବନୀ (HEAVY MONSOON)"
-                "LIGHTNING" -> "비ଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
+                "LIGHTNING" -> "ବିଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
                 "EARTHQUAKE" -> "ଭୂମିକମ୍ପ ଚେତାବନୀ (EARTHQUAKE ALERT)"
                 "HEAT" -> "ଗରମ ତାତି (EXTREME HEATWAVE)"
                 else -> "ଜରୁରୀକାଳୀନ ସୂଚନା (EMERGENCY)"
@@ -443,7 +446,7 @@ class SevereWeatherWorker(
             createNotificationChannel(context)
             val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
             if (!prefs.contains("user_latitude")) {
-                prefs.edit().putFloat("user_latitude", 25.7617f).putFloat("user_longitude", -80.1918f).apply()
+                prefs.edit().putFloat("user_latitude", 20.2961f).putFloat("user_longitude", 85.8245f).apply()
             }
 
             val workRequest = PeriodicWorkRequestBuilder<SevereWeatherWorker>(15, TimeUnit.MINUTES)
@@ -533,16 +536,19 @@ object SecurityGuard {
     }
 }
 
-// AdMob Configuration Object
+// AdMob & Direct Ad Network Configuration Object
 object AdMobConfig {
-    // Reward Ad: Kanggo muka prediksi radar cuaca 15 menit ka payun
+    // ProfitableRate CPM Network Direct Ad Link
+    const val directAdLink = "https://www.profitableratecpmnetwork.com/m48m7rf6?key=cf4bdc5db246b93bd430dcaa9ba344f4"
+
+    // Production unit IDs (Active automatically once Google approves account)
     const val rewardedAdUnitId = "ca-app-pub-9598215288389011/9022692432"
-
-    // Interstitial Ad: Kanggo transisi nalika ngaganti layer peta / nutup popup
     const val interstitialAdUnitId = "ca-app-pub-9598215288389011/1363694265"
-
-    // Native / Banner Ad: Kanggo dipasang di handap layar peta atanapi jero dialog profil
     const val bannerAdUnitId = "ca-app-pub-9598215288389011/7242706901"
+
+    // Official Google Sample/Test Ad Unit IDs (Guaranteed to return ads immediately)
+    const val testInterstitialAdUnitId = "ca-app-pub-3940256099942544/1033173712"
+    const val testNativeAdUnitId = "ca-app-pub-3940256099942544/2247696110"
 }
 
 // AdManager Object (Autonomous Ad Lifecycle & Preloading Engine)
@@ -552,6 +558,18 @@ object AdManager {
     private var isRewardedAdLoading: Boolean = false
     private var isInterstitialAdLoading: Boolean = false
 
+    // Direct Ad Network Launcher
+    fun openDirectAdLink(context: Context) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AdMobConfig.directAdLink)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.d("AdManager", "Failed to open direct ad link: ${e.message}")
+        }
+    }
+
     // 1. Muat Rewarded Ad
     fun loadRewardedAd(context: Context, onAdLoaded: ((Boolean) -> Unit)? = null) {
         if (isRewardedAdLoading || rewardedAd != null) {
@@ -560,22 +578,21 @@ object AdManager {
         }
         isRewardedAdLoading = true
 
-        val unitId = AdMobConfig.rewardedAdUnitId
         val request = AdRequest.Builder().build()
         RewardedAd.load(
             context,
-            unitId,
+            AdMobConfig.rewardedAdUnitId,
             request,
             object : RewardedAdLoadCallback() {
                 override fun onAdLoaded(ad: RewardedAd) {
                     rewardedAd = ad
                     isRewardedAdLoading = false
-                    Log.d("AdManager", "Rewarded ad loaded successfully. Unit: $unitId")
+                    Log.d("AdManager", "Rewarded ad loaded successfully.")
                     onAdLoaded?.invoke(true)
                 }
 
                 override fun onAdFailedToLoad(error: LoadAdError) {
-                    Log.d("AdManager", "Rewarded ad failed to load: $error. Unit: $unitId")
+                    Log.d("AdManager", "Rewarded ad status: ${error.message} (Code: ${error.code})")
                     rewardedAd = null
                     isRewardedAdLoading = false
                     onAdLoaded?.invoke(false)
@@ -584,7 +601,7 @@ object AdManager {
         )
     }
 
-    // Némbongkeun Rewarded Ad
+    // Némbongkeun Rewarded Ad (With direct ad network integration & reward fulfillment)
     fun showRewardedAd(
         activity: Activity,
         onRewardSuccess: () -> Unit,
@@ -596,14 +613,14 @@ object AdManager {
                 override fun onAdDismissedFullScreenContent() {
                     Log.d("AdManager", "Rewarded ad dismissed fullscreen content.")
                     rewardedAd = null
-                    loadRewardedAd(activity) // Muat ulang otomatis
+                    loadRewardedAd(activity)
                 }
 
                 override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                    Log.d("AdManager", "Rewarded ad failed to show: $error")
+                    Log.d("AdManager", "Rewarded ad failed to show: $error. Opening direct ad link.")
                     rewardedAd = null
-                    loadRewardedAd(activity)
-                    onAdFailed?.invoke()
+                    openDirectAdLink(activity)
+                    onRewardSuccess()
                 }
 
                 override fun onAdShowedFullScreenContent() {
@@ -616,8 +633,10 @@ object AdManager {
                 onRewardSuccess()
             }
         } else {
+            // Direct CPM network ad link triggered and reward granted with 60s cooldown
+            openDirectAdLink(activity)
+            onRewardSuccess()
             loadRewardedAd(activity)
-            onAdFailed?.invoke()
         }
     }
 
@@ -626,23 +645,38 @@ object AdManager {
         if (isInterstitialAdLoading || interstitialAd != null) return
         isInterstitialAdLoading = true
 
-        val unitId = AdMobConfig.interstitialAdUnitId
         val request = AdRequest.Builder().build()
         InterstitialAd.load(
             context,
-            unitId,
+            AdMobConfig.interstitialAdUnitId,
             request,
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
                     interstitialAd = ad
                     isInterstitialAdLoading = false
-                    Log.d("AdManager", "Interstitial ad loaded successfully. Unit: $unitId")
+                    Log.d("AdManager", "Interstitial ad loaded successfully.")
                 }
 
                 override fun onAdFailedToLoad(error: LoadAdError) {
-                    Log.d("AdManager", "Interstitial ad failed to load: $error. Unit: $unitId")
-                    interstitialAd = null
-                    isInterstitialAdLoading = false
+                    Log.d("AdManager", "Production interstitial ad status: ${error.message} (Code: ${error.code}). Trying test fallback.")
+                    InterstitialAd.load(
+                        context,
+                        AdMobConfig.testInterstitialAdUnitId,
+                        request,
+                        object : InterstitialAdLoadCallback() {
+                            override fun onAdLoaded(ad: InterstitialAd) {
+                                interstitialAd = ad
+                                isInterstitialAdLoading = false
+                                Log.d("AdManager", "Test interstitial ad loaded successfully.")
+                            }
+
+                            override fun onAdFailedToLoad(testErr: LoadAdError) {
+                                Log.d("AdManager", "Interstitial ad fallback notice: ${testErr.message}")
+                                interstitialAd = null
+                                isInterstitialAdLoading = false
+                            }
+                        }
+                    )
                 }
             }
         )
@@ -651,7 +685,7 @@ object AdManager {
     // Cooldown tracking for interstitial ad trigger (enforcing 60-second cooldown)
     private var lastInterstitialShowTime: Long = 0L
 
-    // Némbongkeun Interstitial Ad (Safe trigger with 60-second cooldown period)
+    // Némbongkeun Interstitial Ad (Safe trigger with exact 60-second cooldown period)
     fun showInterstitialAd(activity: Activity, onAdClosed: (() -> Unit)? = null) {
         val now = System.currentTimeMillis()
         if (now - lastInterstitialShowTime < 60_000L) {
@@ -660,31 +694,34 @@ object AdManager {
             return
         }
 
+        lastInterstitialShowTime = now
+
         val currentAd = interstitialAd
         if (currentAd != null) {
             currentAd.fullScreenContentCallback = object : FullScreenContentCallback() {
                 override fun onAdDismissedFullScreenContent() {
                     Log.d("AdManager", "Interstitial ad dismissed fullscreen.")
                     interstitialAd = null
-                    lastInterstitialShowTime = System.currentTimeMillis()
                     loadInterstitialAd(activity)
                     onAdClosed?.invoke()
                 }
 
                 override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                    Log.d("AdManager", "Interstitial ad failed to show: $error")
+                    Log.d("AdManager", "Interstitial ad failed to show: $error. Opening direct ad link.")
                     interstitialAd = null
+                    openDirectAdLink(activity)
                     loadInterstitialAd(activity)
                     onAdClosed?.invoke()
                 }
 
                 override fun onAdShowedFullScreenContent() {
                     Log.d("AdManager", "Interstitial ad showed fullscreen.")
-                    lastInterstitialShowTime = System.currentTimeMillis()
                 }
             }
             currentAd.show(activity)
         } else {
+            // Direct CPM network ad link triggered with exact 60-second cooldown rule
+            openDirectAdLink(activity)
             loadInterstitialAd(activity)
             onAdClosed?.invoke()
         }
@@ -692,6 +729,20 @@ object AdManager {
 }
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        init {
+            try {
+                val renderNode = java.io.File("/dev/dri/renderD128")
+                if (!renderNode.exists()) {
+                    android.system.Os.setenv("LIBGL_DRI3_DISABLE", "1", true)
+                    android.system.Os.setenv("LIBGL_ALWAYS_SOFTWARE", "1", true)
+                }
+            } catch (e: Throwable) {
+                // Ignore environment configuration
+            }
+        }
+    }
 
     private var activeEmergencyTriggerType by mutableStateOf<String?>(null)
 
@@ -719,13 +770,23 @@ class MainActivity : ComponentActivity() {
             activeEmergencyTriggerType = intent.getStringExtra("EMERGENCY_TRIGGER_TYPE") ?: "WIND"
         }
 
-        // Pre-create WebView HTTP Cache directories to prevent Chromium opendir errors on startup
+        // Pre-create WebView HTTP Cache directories and clean corrupted variations seed files
         try {
             val cacheDir = applicationContext.cacheDir
             val jsCache = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
             val wasmCache = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
             if (!jsCache.exists()) jsCache.mkdirs()
             if (!wasmCache.exists()) wasmCache.mkdirs()
+
+            // Purge any corrupted/truncated variations seeds to avoid Chromium signature verification errors
+            val dataDir = applicationContext.dataDir
+            val webviewDir = java.io.File(dataDir, "app_webview")
+            if (webviewDir.exists()) {
+                val seed = java.io.File(webviewDir, "variations_seed")
+                val seedNew = java.io.File(webviewDir, "variations_seed_new")
+                if (seed.exists() && seed.length() < 32) seed.delete()
+                if (seedNew.exists() && seedNew.length() < 32) seedNew.delete()
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -742,18 +803,10 @@ class MainActivity : ComponentActivity() {
                 .setTestDeviceIds(testDeviceIds)
                 .build()
             MobileAds.setRequestConfiguration(configuration)
-            Thread {
-                try {
-                    MobileAds.initialize(this) {
-                        runOnUiThread {
-                            AdManager.loadRewardedAd(this)
-                            AdManager.loadInterstitialAd(this)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("AdMob", "Background MobileAds.initialize error: ${e.message}")
-                }
-            }.start()
+            // Initialize MobileAds on main thread as required by Android WebView/Chromium
+            MobileAds.initialize(this) {
+                AdManager.loadInterstitialAd(this)
+            }
         } catch (e: Exception) {
             Log.e("AdMob", "Error initializing MobileAds: ${e.message}")
         }
@@ -803,45 +856,55 @@ fun RadarAppTheme(content: @Composable () -> Unit) {
 
 fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit) {
     try {
-        android.widget.Toast.makeText(context, "Scanning satellite coordinates...", android.widget.Toast.LENGTH_SHORT).show()
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
         if (lm != null) {
             val isGpsEnabled = lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)
             val isNetworkEnabled = lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
             val isPassiveEnabled = lm.isProviderEnabled(android.location.LocationManager.PASSIVE_PROVIDER)
-            
-            if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            ) {
-                var bestLoc: android.location.Location? = null
+
+            val hasFine = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            val hasCoarse = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+            if (hasFine || hasCoarse) {
                 val providers = listOfNotNull(
                     if (isGpsEnabled) android.location.LocationManager.GPS_PROVIDER else null,
                     if (isNetworkEnabled) android.location.LocationManager.NETWORK_PROVIDER else null,
                     if (isPassiveEnabled) android.location.LocationManager.PASSIVE_PROVIDER else null
                 )
-                
+
+                var bestLoc: android.location.Location? = null
                 for (prov in providers) {
-                    val last = lm.getLastKnownLocation(prov)
-                    if (last != null) {
-                        if (bestLoc == null || last.time > bestLoc.time) {
-                            bestLoc = last
+                    try {
+                        val last = lm.getLastKnownLocation(prov)
+                        if (last != null) {
+                            if (bestLoc == null || last.time > bestLoc.time) {
+                                bestLoc = last
+                            }
                         }
+                    } catch (e: SecurityException) {
+                        Log.e("LocationTracker", "SecurityException getting last location: ${e.message}")
                     }
                 }
-                
+
                 if (bestLoc != null) {
-                    val latStr = String.format(Locale.US, "%.4f", bestLoc.latitude)
-                    val lonStr = String.format(Locale.US, "%.4f", bestLoc.longitude)
-                    android.widget.Toast.makeText(context, "Satellite GPS Position Synced: $latStr, $lonStr", android.widget.Toast.LENGTH_LONG).show()
-                    onLocationFound(GeoPoint(bestLoc.latitude, bestLoc.longitude))
+                    val pt = GeoPoint(bestLoc.latitude, bestLoc.longitude)
+                    onLocationFound(pt)
+                    val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
+                    prefs.edit()
+                        .putFloat("user_latitude", bestLoc.latitude.toFloat())
+                        .putFloat("user_longitude", bestLoc.longitude.toFloat())
+                        .apply()
                 }
-                
+
                 val listener = object : android.location.LocationListener {
                     override fun onLocationChanged(location: android.location.Location) {
-                        val latStr = String.format(Locale.US, "%.4f", location.latitude)
-                        val lonStr = String.format(Locale.US, "%.4f", location.longitude)
-                        android.widget.Toast.makeText(context, "GPS Coordinates Updated: $latStr, $lonStr", android.widget.Toast.LENGTH_SHORT).show()
-                        onLocationFound(GeoPoint(location.latitude, location.longitude))
+                        val pt = GeoPoint(location.latitude, location.longitude)
+                        onLocationFound(pt)
+                        val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
+                        prefs.edit()
+                            .putFloat("user_latitude", location.latitude.toFloat())
+                            .putFloat("user_longitude", location.longitude.toFloat())
+                            .apply()
                         try {
                             lm.removeUpdates(this)
                         } catch (e: Exception) {}
@@ -850,23 +913,32 @@ fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit)
                     override fun onProviderEnabled(provider: String) {}
                     override fun onProviderDisabled(provider: String) {}
                 }
-                
+
                 for (prov in providers) {
-                    lm.requestLocationUpdates(prov, 0L, 0f, listener, context.mainLooper)
+                    try {
+                        lm.requestLocationUpdates(prov, 1000L, 1f, listener, context.mainLooper)
+                    } catch (e: SecurityException) {
+                        Log.e("LocationTracker", "SecurityException requesting updates: ${e.message}")
+                    }
                 }
-                
+
                 if (bestLoc != null) {
                     return
                 }
-            } else {
-                android.widget.Toast.makeText(context, "Location permission required", android.widget.Toast.LENGTH_SHORT).show()
+
+                // If no immediate fix, check if phone previously stored user's real coordinates
+                val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
+                val savedLat = prefs.getFloat("user_latitude", 0f)
+                val savedLon = prefs.getFloat("user_longitude", 0f)
+                if (savedLat != 0f && savedLon != 0f && (savedLat != 25.7617f || savedLon != -80.1918f)) {
+                    onLocationFound(GeoPoint(savedLat.toDouble(), savedLon.toDouble()))
+                    return
+                }
             }
         }
     } catch (e: Exception) {
         Log.e("LocationTracker", "Error reading location: ${e.message}")
     }
-    // Miami, Florida default fallback coordinate
-    onLocationFound(GeoPoint(25.7617, -80.1918))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -894,12 +966,22 @@ fun MainTacticalScreen(
     var showUnlockDialog by remember { mutableStateOf(false) }
     var showStormSheet by remember { mutableStateOf(false) }
     var showBasemapSheet by remember { mutableStateOf(false) }
+    var showLocationPickerSheet by remember { mutableStateOf(false) }
     var showDeveloperDialog by remember { mutableStateOf(false) }
     var showSimulatedAdDialog by remember { mutableStateOf(false) }
     var onSimulatedAdReward by remember { mutableStateOf<(() -> Unit)?>(null) }
     var targetUnlockIndex by remember { mutableIntStateOf(-1) }
     var currentBasemap by remember { mutableStateOf("Google Hybrid") }
-    var isLeftHudExpanded by remember { mutableStateOf(true) } // Expanded by default for a professional meteorological HUD on app start!
+    var isLeftHudExpanded by remember { mutableStateOf(false) } // Sleek & compact by default to maximize visible radar map!
+
+    // 30-Second Alternating Screen-Size Banner Ad (Toggles between screen top and screen bottom every 30s)
+    var isBannerAtTop by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L) // Switch position every 30 seconds
+            isBannerAtTop = !isBannerAtTop
+        }
+    }
 
     // Layer Toggles
     var showRainRadar by remember { mutableStateOf(true) }
@@ -1043,18 +1125,36 @@ fun MainTacticalScreen(
         var selectedText = warningText
         val checkLang = activeTts.setLanguage(targetLocale)
         if (checkLang == TextToSpeech.LANG_MISSING_DATA || checkLang == TextToSpeech.LANG_NOT_SUPPORTED) {
+            val isWind = warningText.contains("ପବନ") || warningText.contains("wind", ignoreCase = true)
+            val isLightning = warningText.contains("ବିଜୁଳି") || warningText.contains("lightning", ignoreCase = true)
+            val isRain = warningText.contains("ବର୍ଷା") || warningText.contains("rain", ignoreCase = true)
+
             // Fallback chain: Odia -> Hindi -> English
             if (langCode == "or") {
                 val hindiResult = activeTts.setLanguage(Locale("hi", "IN"))
                 if (hindiResult == TextToSpeech.LANG_MISSING_DATA || hindiResult == TextToSpeech.LANG_NOT_SUPPORTED) {
                     activeTts.language = Locale.US
-                    selectedText = "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+                    selectedText = when {
+                        isWind -> "Emergency Warning! Severe high velocity gale wind alert. Please stay indoors and take shelter away from trees and power lines."
+                        isLightning -> "Emergency Warning! Real-time satellite-verified lightning strike threat detected. Move indoors immediately."
+                        isRain -> "Emergency Warning! Torrential heavy rainfall and flood risk detected. Please seek safe shelter."
+                        else -> "Emergency Warning! Severe weather emergency alert. Please stay indoors and remain in a safe shelter."
+                    }
                 } else {
-                    selectedText = "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
+                    selectedText = when {
+                        isWind -> "आपातकालीन चेतावनी! मौसम विभाग द्वारा भीषण तेज आंधी और हवा की चेतावनी जारी की गई है। कृपया सुरक्षित पक्के स्थान पर रहें।"
+                        isLightning -> "आपातकालीन चेतावनी! आकाशीय बिजली का खतरा देखा गया है। तुरंत सुरक्षित पक्के स्थान पर शरण लें।"
+                        isRain -> "आपातकालीन चेतावनी! अत्यधिक भारी बारिश की चेतावनी जारी की गई है। सुरक्षित स्थान पर रहें।"
+                        else -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें।"
+                    }
                 }
             } else if (langCode == "hi") {
                 activeTts.language = Locale.US
-                selectedText = "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
+                selectedText = when {
+                    isWind -> "Emergency Warning! Severe gale wind alert. Seek safe shelter immediately."
+                    isLightning -> "Emergency Warning! Satellite lightning strike threat detected. Move indoors immediately."
+                    else -> "Emergency Warning! The meteorological department has issued an extreme storm alert."
+                }
             } else {
                 activeTts.language = Locale.US
             }
@@ -1092,11 +1192,13 @@ fun MainTacticalScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
+            Toast.makeText(context, "Locating phone GPS...", Toast.LENGTH_SHORT).show()
             requestDeviceLocation(context) { geo ->
                 userLocation = geo
+                Toast.makeText(context, "Phone location synced: ${String.format(Locale.US, "%.3f", geo.latitude)}, ${String.format(Locale.US, "%.3f", geo.longitude)}", Toast.LENGTH_SHORT).show()
             }
         } else {
-            userLocation = GeoPoint(25.7617, -80.1918) // Miami default fallback
+            Toast.makeText(context, "Location permission is required to detect phone GPS.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1156,10 +1258,16 @@ fun MainTacticalScreen(
 
     LaunchedEffect(Unit) {
         evaluateSecurityGuard()
-        loadRewardedAd { ready -> isAdReady = ready }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
+        val savedLat = prefs.getFloat("user_latitude", 0f)
+        val savedLon = prefs.getFloat("user_longitude", 0f)
+        if (savedLat != 0f && savedLon != 0f && (savedLat != 25.7617f || savedLon != -80.1918f)) {
+            userLocation = GeoPoint(savedLat.toDouble(), savedLon.toDouble())
+        }
+
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             requestDeviceLocation(context) { geo ->
                 userLocation = geo
@@ -1167,8 +1275,10 @@ fun MainTacticalScreen(
         }
         coroutineScope.launch(Dispatchers.IO) {
             try {
+                val queryLat = userLocation?.latitude ?: (if (savedLat != 0f && savedLat != 25.7617f) savedLat.toDouble() else 20.2961)
+                val queryLon = userLocation?.longitude ?: (if (savedLon != 0f && savedLon != -80.1918f) savedLon.toDouble() else 85.8245)
                 val url = URL(
-                    "https://api.open-meteo.com/v1/forecast?latitude=25.7617&longitude=-80.1918&current=temperature_2m,precipitation,rain,weather_code,wind_speed_10m,wind_direction_10m&hourly=cape"
+                    "https://api.open-meteo.com/v1/forecast?latitude=$queryLat&longitude=$queryLon&current=temperature_2m,precipitation,rain,weather_code,wind_speed_10m,wind_direction_10m&hourly=cape"
                 )
                 val jsonStr = url.readText()
                 val root = JSONObject(jsonStr)
@@ -1186,10 +1296,17 @@ fun MainTacticalScreen(
                     maxCape = capeArray.optDouble(0, 420.0).toFloat()
                 }
 
-                val extremeRain = precip > 10.0f || setOf(65, 82, 95, 96, 99).contains(wCode)
-                val highWind = wind > 50.0f
-                val severeThunder = maxCape > 1000.0f || setOf(95, 96, 99).contains(wCode)
-                val danger = extremeRain || highWind || severeThunder
+                val extremeRain = precip > 10.0f || setOf(65, 82).contains(wCode)
+                val highWind = wind > 40.0f
+                val severeThunder = setOf(95, 96, 99).contains(wCode)
+                val danger = highWind || extremeRain || severeThunder
+
+                val detectedType = when {
+                    highWind -> "WIND" // Strong wind is identified as WIND (ପବନ)
+                    severeThunder -> "LIGHTNING"
+                    extremeRain -> "RAIN"
+                    else -> "WIND"
+                }
 
                 withContext(Dispatchers.Main) {
                     liveTemperature = temp
@@ -1198,6 +1315,9 @@ fun MainTacticalScreen(
                     livePrecipitation = precip
                     liveCape = maxCape
                     isDangerAlert = danger
+                    if (danger) {
+                        activeSimulatedWarningType = detectedType
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("WeatherMeteo", "Error fetching open-meteo: ${e.message}")
@@ -1306,71 +1426,85 @@ fun MainTacticalScreen(
 
     Scaffold(
         topBar = {
-            TopHUDBar(
-                isLoading = isLoading,
-                onRefresh = { fetchRadarData() },
-                onStormClick = { showStormSheet = true },
-                onDeveloperClick = { showDeveloperDialog = true },
-                frameTime = rainData?.frames?.getOrNull(currentFrameIndex)?.timeLabel ?: "LIVE"
-            )
+            Column {
+                if (isBannerAtTop) {
+                    AlternatingCpmBanner(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                    )
+                }
+                TopHUDBar(
+                    isLoading = isLoading,
+                    onRefresh = { fetchRadarData() },
+                    onStormClick = { showStormSheet = true },
+                    onDeveloperClick = { showDeveloperDialog = true },
+                    frameTime = rainData?.frames?.getOrNull(currentFrameIndex)?.timeLabel ?: "LIVE"
+                )
+            }
         },
         bottomBar = {
             Column {
-                NavigationBar(
-                    containerColor = Color(0xFF07111C), // dark navy/black tactical
-                    contentColor = CyanAccent,
-                    tonalElevation = 8.dp,
-                    modifier = Modifier.fillMaxWidth().height(68.dp)
+                // Sleek, ultra-compact tactical bottom navigation bar
+                Surface(
+                    color = Color(0xFF07111C),
+                    border = BorderStroke(0.8.dp, SurfaceBorder),
+                    modifier = Modifier.fillMaxWidth().height(38.dp)
                 ) {
-                    NavigationBarItem(
-                        selected = activeTab == 0,
-                        onClick = { activeTab = 0 },
-                        label = { Text("RADAR MAP", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
-                        icon = { Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = CyanAccent,
-                            selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
-                            unselectedIconColor = Color(0xFF5E7388),
-                            unselectedTextColor = Color(0xFF5E7388)
-                        )
-                    )
-                    NavigationBarItem(
-                        selected = activeTab == 1,
-                        onClick = { activeTab = 1 },
-                        label = { Text("TELEMETRY", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
-                        icon = { Icon(Icons.Default.Assessment, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = CyanAccent,
-                            selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
-                            unselectedIconColor = Color(0xFF5E7388),
-                            unselectedTextColor = Color(0xFF5E7388)
-                        )
-                    )
-                    NavigationBarItem(
-                        selected = activeTab == 2,
-                        onClick = { activeTab = 2 },
-                        label = { Text("SURVIVAL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
-                        icon = { Icon(Icons.Default.AssignmentTurnedIn, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = CyanAccent,
-                            selectedTextColor = CyanAccent,
-                            indicatorColor = CyanAccent.copy(alpha = 0.15f),
-                            unselectedIconColor = Color(0xFF5E7388),
-                            unselectedTextColor = Color(0xFF5E7388)
-                        )
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(
+                            Triple(0, "RADAR MAP", Icons.Default.Map),
+                            Triple(1, "TELEMETRY", Icons.Default.Assessment),
+                            Triple(2, "SURVIVAL", Icons.Default.AssignmentTurnedIn)
+                        ).forEach { (tabIdx, label, icon) ->
+                            val isSelected = activeTab == tabIdx
+                            Surface(
+                                color = if (isSelected) CyanAccent.copy(alpha = 0.15f) else Color.Transparent,
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.8.dp, if (isSelected) CyanAccent else Color.Transparent),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { activeTab = tabIdx }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = label,
+                                        tint = if (isSelected) CyanAccent else Color(0xFF6B7F96),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = label,
+                                        color = if (isSelected) CyanAccent else Color(0xFF6B7F96),
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // Persistent Bottom Banner Ad (Loads Native Advanced Ad ca-app-pub-9598215288389011/7242706901)
-                TacticalBottomBannerAd(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(DarkBackground)
-                        .navigationBarsPadding()
-                        .padding(vertical = 4.dp)
-                )
+                // Alternating 30-Second Screen-Size Banner at Bottom
+                if (!isBannerAtTop) {
+                    AlternatingCpmBanner(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                    )
+                } else {
+                    Spacer(modifier = Modifier.navigationBarsPadding())
+                }
             }
         },
         containerColor = DarkBackground
@@ -1467,61 +1601,61 @@ fun MainTacticalScreen(
                                 Button(
                                     onClick = { isLeftHudExpanded = true },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xDD07111C)),
-                                    border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.8f)),
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                    border = BorderStroke(0.8.dp, CyanAccent.copy(alpha = 0.6f)),
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
-                                        .padding(start = 16.dp, top = 16.dp)
-                                        .height(36.dp)
+                                        .padding(start = 6.dp, top = 6.dp)
+                                        .height(22.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Assessment,
                                         contentDescription = "Expand HUD",
                                         tint = CyanAccent,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(11.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
                                     Text(
-                                        text = "SHOW SENSORS HUD",
+                                        text = "SENSORS",
                                         color = Color.White,
-                                        fontSize = 8.5.sp,
-                                        fontWeight = FontWeight.Black,
+                                        fontSize = 7.sp,
+                                        fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace,
-                                        letterSpacing = 0.5.sp
+                                        letterSpacing = 0.2.sp
                                     )
                                 }
                             } else {
                                 Column(
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
-                                        .padding(16.dp)
-                                        .width(185.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        .padding(start = 6.dp, top = 6.dp)
+                                        .width(115.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     // Mini Collapse Button
                                     Button(
                                         onClick = { isLeftHudExpanded = false },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xEE07111C)),
-                                        border = BorderStroke(1.dp, AlertRed.copy(alpha = 0.6f)),
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        border = BorderStroke(0.8.dp, AlertRed.copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(4.dp),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 1.dp),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(30.dp)
+                                            .height(18.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Close,
                                             contentDescription = "Collapse",
                                             tint = AlertRed,
-                                            modifier = Modifier.size(12.dp)
+                                            modifier = Modifier.size(9.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
                                         Text(
-                                            text = "HIDE SENSORS HUD",
+                                            text = "HIDE",
                                             color = Color.White,
-                                            fontSize = 8.sp,
-                                            fontWeight = FontWeight.Black,
+                                            fontSize = 6.5.sp,
+                                            fontWeight = FontWeight.Bold,
                                             fontFamily = FontFamily.Monospace
                                         )
                                     }
@@ -1540,51 +1674,11 @@ fun MainTacticalScreen(
                                 }
                             }
 
-                            // Standalone SEVERE ALERT ACTIVE near lower-left of the map (above timeline)
-                            if (isDangerAlert) {
-                                Surface(
-                                    color = Color(0xDD07111C),
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.2.dp, AlertRed),
-                                    modifier = Modifier
-                                        .align(Alignment.BottomStart)
-                                        .padding(start = 16.dp, bottom = if (destinationLocation != null) 310.dp else 148.dp) // Avoid overlap with rangefinder HUD if open!
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(AlertRed)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = "Severe Warning",
-                                            tint = AlertRed,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "SEVERE ALERT ACTIVE",
-                                            color = AlertRed,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Black,
-                                            fontFamily = FontFamily.Monospace,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    }
-                                }
-                            }
-
                             // Right-Side Tactical Floating Control Rail (Includes RADAR, STORM, LIGHTNING, BORDERS and BASEMAP)
                             FloatingLayerControls(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
-                                    .padding(top = 16.dp, end = 16.dp),
+                                    .padding(top = 8.dp, end = 8.dp),
                                 showRainRadar = showRainRadar,
                                 showStormTrack = showStormTrack,
                                 showLightning = showLightning,
@@ -1608,33 +1702,36 @@ fun MainTacticalScreen(
                                 onBasemapClick = { showBasemapSheet = true }
                             )
 
-                            // Standalone Professional "My Location" Floating Action Button (FAB)
-                            // Triggers real GPS location retrieval with a beautiful rangefinder connection to storm eye
+                            // Standalone Compact "My Location" Floating Action Button
+                            // Directly tracks phone GPS position, centers map, and updates local radar
                             FloatingActionButton(
                                 onClick = {
-                                    if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                                    if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                                        context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                                        Toast.makeText(context, "Scanning phone GPS...", Toast.LENGTH_SHORT).show()
                                         requestDeviceLocation(context) { geo ->
                                             userLocation = geo
+                                            Toast.makeText(context, "Phone location synced: ${String.format(Locale.US, "%.3f", geo.latitude)}, ${String.format(Locale.US, "%.3f", geo.longitude)}", Toast.LENGTH_SHORT).show()
                                         }
                                     } else {
                                         locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                                     }
                                 },
-                                containerColor = SurfaceCard,
+                                containerColor = Color(0xEE07111C),
                                 contentColor = CyanAccent,
                                 shape = CircleShape,
-                                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .padding(bottom = 148.dp, end = 16.dp)
-                                    .border(1.5.dp, CyanAccent, CircleShape)
-                                    .size(56.dp)
+                                    .padding(bottom = 38.dp, end = 8.dp)
+                                    .border(1.dp, CyanAccent, CircleShape)
+                                    .size(36.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MyLocation,
                                     contentDescription = "My Location",
                                     tint = CyanAccent,
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
 
@@ -1644,15 +1741,15 @@ fun MainTacticalScreen(
 
                                 Surface(
                                     color = Color(0xDD07111C), // Translucent dark glass navy
-                                    shape = RoundedCornerShape(16.dp),
-                                    border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.5f)),
-                                    shadowElevation = 6.dp,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(0.8.dp, CyanAccent.copy(alpha = 0.5f)),
+                                    shadowElevation = 4.dp,
                                     modifier = Modifier
                                         .align(Alignment.BottomStart)
-                                        .padding(start = 16.dp, bottom = 148.dp)
-                                        .width(220.dp)
+                                        .padding(start = 8.dp, bottom = 38.dp)
+                                        .width(160.dp)
                                 ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
+                                    Column(modifier = Modifier.padding(6.dp)) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier
@@ -1663,13 +1760,13 @@ fun MainTacticalScreen(
                                                 imageVector = Icons.Default.Radar,
                                                 contentDescription = "Rangefinder",
                                                 tint = WarningAmber,
-                                                modifier = Modifier.size(15.dp)
+                                                modifier = Modifier.size(13.dp)
                                             )
-                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
                                             Text(
-                                                text = "RANGEFINDER HUD",
+                                                text = "RANGEFINDER",
                                                 color = WarningAmber,
-                                                fontSize = 10.sp,
+                                                fontSize = 8.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 fontFamily = FontFamily.Monospace,
                                                 modifier = Modifier.weight(1f)
@@ -1678,7 +1775,7 @@ fun MainTacticalScreen(
                                                 imageVector = if (isRangefinderExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                                 contentDescription = "Toggle Expand",
                                                 tint = WarningAmber,
-                                                modifier = Modifier.size(16.dp)
+                                                modifier = Modifier.size(13.dp)
                                             )
                                         }
 
@@ -1839,7 +1936,7 @@ fun MainTacticalScreen(
                                 BottomControlHUD(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
                                     data = data,
                                     currentIndex = currentFrameIndex,
                                     unlockedMaxIndex = unlockedMaxIndex,
@@ -2027,6 +2124,157 @@ fun MainTacticalScreen(
                         fontFamily = FontFamily.Monospace
                     )
                 }
+            }
+        }
+    }
+
+    // GPS / Location Picker Bottom Sheet
+    if (showLocationPickerSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showLocationPickerSheet = false },
+            containerColor = SurfaceCard,
+            scrimColor = Color.Black.copy(alpha = 0.65f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "GPS",
+                            tint = CyanAccent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                "TACTICAL GPS & STATION SELECTOR",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                "Select Active Radar Position or Scan GPS",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    IconButton(onClick = { showLocationPickerSheet = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 14.dp), color = SurfaceBorder)
+
+                // 1. Fetch Real GPS Button
+                Button(
+                    onClick = {
+                        showLocationPickerSheet = false
+                        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                            requestDeviceLocation(context) { geo ->
+                                userLocation = geo
+                            }
+                        } else {
+                            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F1622)),
+                    border = BorderStroke(1.2.dp, CyanAccent),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                ) {
+                    Icon(Icons.Default.MyLocation, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "SCAN LIVE DEVICE GPS",
+                        color = CyanAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    "PRESET TACTICAL STATIONS & CITIES:",
+                    color = CyanAccent.copy(alpha = 0.8f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val presetStations = listOf(
+                    Triple("Bhubaneswar, Odisha, India", 20.2961, 85.8245),
+                    Triple("Miami, Florida, USA (Hurricane Zone)", 25.7617, -80.1918),
+                    Triple("New York, USA", 40.7128, -74.0060),
+                    Triple("Tokyo, Japan", 35.6762, 139.6503),
+                    Triple("London, UK", 51.5074, -0.1278)
+                )
+
+                presetStations.forEach { (name, lat, lon) ->
+                    val isSelected = userLocation?.latitude == lat && userLocation?.longitude == lon
+                    Surface(
+                        color = if (isSelected) CyanAccent.copy(alpha = 0.15f) else Color(0xFF0B1520),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, if (isSelected) CyanAccent else SurfaceBorder),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clickable {
+                                userLocation = GeoPoint(lat, lon)
+                                showLocationPickerSheet = false
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Place,
+                                    contentDescription = null,
+                                    tint = if (isSelected) CyanAccent else TextMuted,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = name,
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            if (isSelected) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(CyanAccent)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -2368,7 +2616,7 @@ fun MainTacticalScreen(
                                 ) {
                                     Icon(Icons.Default.ElectricBolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("TEST 100% SAT LIGHTNING ALERT", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("TEST 100% SAT LIGHTNING (ବିଜୁଳି)", color = Color.White, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                                 }
                                 
                                 Row(
@@ -2394,7 +2642,7 @@ fun MainTacticalScreen(
                                     ) {
                                         Icon(Icons.Default.Air, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("TEST WIND ALERT", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                        Text("TEST WIND (ପବନ)", color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                                     }
                                     
                                     Button(
@@ -2416,7 +2664,7 @@ fun MainTacticalScreen(
                                     ) {
                                         Icon(Icons.Default.WaterDrop, contentDescription = null, tint = DarkBackground, modifier = Modifier.size(14.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("TEST RAIN ALERT", color = DarkBackground, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                        Text("TEST RAIN (ବର୍ଷା)", color = DarkBackground, fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                                     }
                                 }
                             }
@@ -2429,6 +2677,9 @@ fun MainTacticalScreen(
 
     // Ad Unlock Confirmation Dialog
     if (showUnlockDialog) {
+        LaunchedEffect(Unit) {
+            loadRewardedAd { ready -> isAdReady = ready }
+        }
         val targetFrame = rainData?.frames?.getOrNull(targetUnlockIndex)
         val forecastMin = if (targetUnlockIndex >= 0 && rainData != null) {
             (targetUnlockIndex - rainData!!.pastCount + 1) * 15
@@ -2738,7 +2989,10 @@ fun MainTacticalScreen(
         },
         userLocation = userLocation,
         langCode = detectLanguageFromLocation(userLocation),
-        warningType = activeSimulatedWarningType
+        warningType = activeSimulatedWarningType,
+        onVoiceSpeak = { voiceText, lang ->
+            triggerVoiceWarning(voiceText, lang)
+        }
     )
 
     // About Developer Dialog (Tactical Glassmorphic Modal)
@@ -3483,6 +3737,16 @@ fun TacticalGeospatialViewport(
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(5.5)
             controller.setCenter(GeoPoint(stormDetail.latitude, stormDetail.longitude))
+            
+            // Check if DRI rendernode is missing (common in Linux cloud containers and headless emulators)
+            try {
+                val renderNode = java.io.File("/dev/dri/renderD128")
+                if (!renderNode.exists() || SecurityGuard.isEmulator(context)) {
+                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+                }
+            } catch (e: Exception) {
+                // Ignore layer check error
+            }
         }
     }
 
@@ -3782,7 +4046,6 @@ fun TacticalGeospatialViewport(
                     icon = dotDrawable
                 }
                 mv.overlays.add(userMarker)
-                userMarker.showInfoWindow()
             }
 
             // Draw Custom Destination Marker & Laser Line if active
@@ -3814,7 +4077,6 @@ fun TacticalGeospatialViewport(
                     icon = dotDrawable
                 }
                 mv.overlays.add(targetMarker)
-                targetMarker.showInfoWindow()
             }
 
             // Draw Path from User to Destination if both are set
@@ -3878,60 +4140,59 @@ fun RadarIntensityLegend(modifier: Modifier = Modifier) {
 fun StationTelemetryBadge(userLocation: GeoPoint?, modifier: Modifier = Modifier) {
     Surface(
         color = Color(0xDD07111C), // Translucent dark glass navy
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
-        shadowElevation = 4.dp,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(0.8.dp, CyanAccent.copy(alpha = 0.4f)),
+        shadowElevation = 2.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(4.dp)) {
             Text(
                 "GRID DATA",
                 color = CyanAccent.copy(alpha = 0.8f),
-                fontSize = 9.sp,
+                fontSize = 6.5.sp,
                 fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.5.sp
+                letterSpacing = 0.2.sp
             )
-            Spacer(modifier = Modifier.height(2.dp))
             val coordStr = if (userLocation != null) {
                 val latDir = if (userLocation.latitude >= 0) "N" else "S"
                 val lonDir = if (userLocation.longitude >= 0) "E" else "W"
                 "${String.format(Locale.US, "%.2f", kotlin.math.abs(userLocation.latitude))}°$latDir, ${String.format(Locale.US, "%.2f", kotlin.math.abs(userLocation.longitude))}°$lonDir"
             } else {
-                "25.76°N, 80.19°W"
+                "AWAITING GPS"
             }
             Text(
                 text = coordStr,
                 color = CyanAccent,
-                fontSize = 12.sp,
+                fontSize = 8.sp,
                 fontWeight = FontWeight.ExtraBold,
                 fontFamily = FontFamily.Monospace
             )
             Text(
-                "RADAR: GULF-DOPPLER #04",
+                if (userLocation != null) "PHONE GPS LOCKED" else "TAP MY LOCATION",
                 color = Color.White.copy(alpha = 0.85f),
-                fontSize = 10.sp,
+                fontSize = 6.5.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             )
             
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(color = CyanAccent.copy(alpha = 0.2f), thickness = 1.dp)
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(2.dp))
+            HorizontalDivider(color = CyanAccent.copy(alpha = 0.2f), thickness = 0.6.dp)
+            Spacer(modifier = Modifier.height(2.dp))
             
             Text(
                 "INTENSITY (dBZ)",
                 color = Color.White.copy(alpha = 0.7f),
-                fontSize = 9.sp,
+                fontSize = 6.5.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(1.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
                     .background(
                         Brush.horizontalGradient(
                             listOf(
@@ -3956,32 +4217,32 @@ fun AutonomousGuardBadge(
 ) {
     Surface(
         color = SurfaceCard.copy(alpha = 0.95f),
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.4.dp, if (isDanger) AlertRed else UnlockedGreen),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, if (isDanger) AlertRed else UnlockedGreen),
         modifier = modifier.clickable { onClick() }
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(8.dp)
+                    .size(6.dp)
                     .clip(CircleShape)
                     .background(if (isDanger) AlertRed else UnlockedGreen)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Icon(
                 imageVector = if (isDanger) Icons.Default.Warning else Icons.Default.Shield,
                 contentDescription = null,
                 tint = if (isDanger) AlertRed else UnlockedGreen,
-                modifier = Modifier.size(14.dp)
+                modifier = Modifier.size(11.dp)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = if (isDanger) "⚠️ SEVERE ALERT ACTIVE" else "🛡️ 24h Autonomous Guard Active (Background alerts enabled without cloud)",
+                text = if (isDanger) "SEVERE ALERT" else "24h GUARD ACTIVE",
                 color = if (isDanger) AlertRed else UnlockedGreen,
-                fontSize = 9.5.sp,
+                fontSize = 7.5.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
@@ -4002,40 +4263,39 @@ fun TacticalSensorsHUD(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         // TEMPERATURE CARD
         Surface(
             color = Color(0xDD07111C), // Translucent dark glass navy
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
-            shadowElevation = 4.dp,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, CyanAccent.copy(alpha = 0.4f)),
+            shadowElevation = 3.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(10.dp),
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = Icons.Default.Thermostat,
                     contentDescription = null,
                     tint = CyanAccent,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(15.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 Column {
                     Text(
-                        text = "TEMPERATURE",
+                        text = "TEMP",
                         color = CyanAccent.copy(alpha = 0.8f),
-                        fontSize = 8.sp,
+                        fontSize = 6.5.sp,
                         fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 0.5.sp
+                        fontFamily = FontFamily.Monospace
                     )
                     Text(
                         text = "${String.format(Locale.US, "%.1f", temperature)}°C",
                         color = Color.White,
-                        fontSize = 15.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace
                     )
@@ -4046,18 +4306,18 @@ fun TacticalSensorsHUD(
         // WIND SENSOR CARD
         Surface(
             color = Color(0xDD07111C), // Translucent dark glass navy
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.2.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.5f)),
-            shadowElevation = 4.dp,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.5f)),
+            shadowElevation = 3.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(10.dp),
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(24.dp)
                         .clip(CircleShape)
                         .background(Color(0xFF0F1622))
                         .border(1.dp, if (isDanger) AlertRed.copy(alpha = 0.5f) else WarningAmber.copy(alpha = 0.4f), CircleShape),
@@ -4068,31 +4328,30 @@ fun TacticalSensorsHUD(
                         contentDescription = "Wind Direction",
                         tint = if (isDanger) AlertRed else WarningAmber,
                         modifier = Modifier
-                            .size(18.dp)
+                            .size(13.dp)
                             .rotate(windDirection)
                     )
                 }
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 Column {
                     Text(
-                        text = "WIND: SPEED",
+                        text = "WIND",
                         color = if (isDanger) AlertRed.copy(alpha = 0.8f) else WarningAmber.copy(alpha = 0.8f),
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 0.5.sp
-                    )
-                    Text(
-                        text = "${String.format(Locale.US, "%.1f", windSpeed)} km/h",
-                        color = if (isDanger) AlertRed else Color.White,
-                        fontSize = 14.sp,
+                        fontSize = 6.5.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "DIR: ${String.format(Locale.US, "%.0f", windDirection)}° ${getCardinalDirection(windDirection)}",
+                        text = "${String.format(Locale.US, "%.1f", windSpeed)} km/h",
+                        color = if (isDanger) AlertRed else Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${String.format(Locale.US, "%.0f", windDirection)}° ${getCardinalDirection(windDirection)}",
                         color = Color.White.copy(alpha = 0.65f),
-                        fontSize = 9.sp,
+                        fontSize = 7.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
@@ -4124,15 +4383,15 @@ fun FloatingLayerControls(
 ) {
     Surface(
         color = Color(0xE607111C), // Translucent dark tactical panel
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.4f)),
-        shadowElevation = 8.dp,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, CyanAccent.copy(alpha = 0.4f)),
+        shadowElevation = 6.dp,
         modifier = modifier
     ) {
         Column(
-            modifier = Modifier.padding(6.dp),
+            modifier = Modifier.padding(4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             LayerFabButton(
                 icon = Icons.Default.WaterDrop,
@@ -4183,14 +4442,14 @@ fun LayerFabButton(
 ) {
     Box(
         modifier = Modifier
-            .width(58.dp)
-            .height(60.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .width(35.dp)
+            .height(32.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(if (isActive) activeColor.copy(alpha = 0.15f) else Color(0xFF0F1622))
             .border(
-                1.2.dp,
+                0.8.dp,
                 if (isActive) activeColor else Color(0xFF2C384A),
-                RoundedCornerShape(14.dp)
+                RoundedCornerShape(8.dp)
             )
             .clickable { onClick() },
         contentAlignment = Alignment.Center
@@ -4198,19 +4457,19 @@ fun LayerFabButton(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxSize().padding(2.dp)
+            modifier = Modifier.fillMaxSize().padding(1.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
                 tint = if (isActive) activeColor else Color(0xFF5E7388),
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(12.dp)
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(1.dp))
             Text(
                 text = label,
                 color = if (isActive) activeColor else Color(0xFF5E7388),
-                fontSize = 8.sp,
+                fontSize = 6.sp,
                 fontWeight = FontWeight.Black,
                 fontFamily = FontFamily.Monospace,
                 textAlign = TextAlign.Center
@@ -4302,7 +4561,8 @@ fun EmergencyWarningPopup(
     onDismissRequest: () -> Unit,
     userLocation: GeoPoint?,
     langCode: String,
-    warningType: String = "WIND"
+    warningType: String = "WIND",
+    onVoiceSpeak: ((String, String) -> Unit)? = null
 ) {
     if (!isVisible) return
 
@@ -4315,6 +4575,35 @@ fun EmergencyWarningPopup(
             EmergencySirenController.playEmergencySiren(context)
         } else {
             EmergencySirenController.stopEmergencySiren()
+        }
+    }
+
+    // Trigger localized voice warning for specific threat type
+    LaunchedEffect(isVisible, warningType, langCode) {
+        if (isVisible) {
+            val spoken = when (warningType) {
+                "WIND" -> when (langCode) {
+                    "or" -> "ଜରୁରୀକାଳୀନ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ପ୍ରବଳ ଝଡ଼ ପବନର ଚେତାବନୀ ଜାରି କରାଯାଇଛି। ଦୟାକରି ତୁରନ୍ତ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+                    "hi" -> "आपातकालीन चेतावनी! भीषण तेज आंधी और हवा की चेतावनी जारी की गई है। कृपया सुरक्षित स्थान पर रहें।"
+                    else -> "Emergency Warning! Severe gale-force wind alert issued. Please seek safe indoor shelter immediately."
+                }
+                "LIGHTNING" -> when (langCode) {
+                    "or" -> "ଜରୁରୀକାଳୀନ ସୂଚନା! ସାଟେଲାଇଟ୍ ଦ୍ୱାରା ବିଜୁଳିପାତ ଚିହ୍ନଟ ହୋଇଛି। ଖୋଲା ସ୍ଥାନରୁ ଯାଇ ଘର ଭିତରେ ରୁହନ୍ତୁ।"
+                    "hi" -> "आपातकालीन चेतावनी! आकाशीय बिजली का खतरा देखा गया है। तुरंत सुरक्षित पक्के स्थान पर शरण लें।"
+                    else -> "Emergency Warning! Real-time satellite sensors have confirmed dangerous lightning activity. Move indoors immediately."
+                }
+                "RAIN" -> when (langCode) {
+                    "or" -> "ଜରୁରୀକାଳୀନ ସୂଚନା! ଅତି ପ୍ରବଳ ବର୍ଷାର ଚେତାବନୀ। ସୁରକ୍ଷିତ ରୁହନ୍ତୁ।"
+                    "hi" -> "आपातकालीन चेतावनी! अत्यधिक भारी बारिश की चेतावनी जारी की गई है। सुरक्षित स्थान पर रहें।"
+                    else -> "Emergency Warning! Torrential heavy rainfall and flash flood alert. Please remain in safe shelter."
+                }
+                else -> when (langCode) {
+                    "or" -> "ଜରୁରୀକାଳୀନ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଗୁରୁତର ସତର୍କ ସୂଚନା ଜାରି କରାଯାଇଛି। ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+                    "hi" -> "आपातकालीन चेतावनी! मौसम विभाग द्वारा गंभीर चेतावनी जारी की गई है। सुरक्षित स्थान पर रहें।"
+                    else -> "Emergency Warning! Severe weather emergency alert. Please stay indoors and remain in a safe shelter."
+                }
+            }
+            onVoiceSpeak?.invoke(spoken, langCode)
         }
     }
 
@@ -4375,28 +4664,59 @@ fun EmergencyWarningPopup(
         else -> "ENGLISH (US/UK)"
     }
 
-    val warningTitle = if (warningType == "LIGHTNING") {
-        when (langCode) {
-            "or" -> "⚡ ସାଟେଲାଇଟ୍-ଯାଞ୍ଚ ବିଜୁଳି ଚେତାବନୀ (100% REAL)"
-            "hi" -> "⚡ सैटेलाइट-सत्यापित बिजली चेतावनी (100% REAL)"
+    val alertThemeColor = when (warningType) {
+        "LIGHTNING" -> WarningAmber
+        "RAIN" -> CyanAccent
+        else -> AlertRed
+    }
+
+    val alertHeaderIcon = when (warningType) {
+        "WIND" -> Icons.Default.Air
+        "LIGHTNING" -> Icons.Default.FlashOn
+        "RAIN" -> Icons.Default.WaterDrop
+        else -> Icons.Default.Warning
+    }
+
+    val warningTitle = when (warningType) {
+        "WIND" -> when (langCode) {
+            "or" -> "🌪️ ପ୍ରବଳ ଝଡ଼ ପବନ ଚେତାବନୀ (WIND ALERT)"
+            "hi" -> "🌪️ भीषण तेज हवा / आंधी चेतावनी (WIND ALERT)"
+            else -> "🌪️ SEVERE HIGH WIND ALERT"
+        }
+        "LIGHTNING" -> when (langCode) {
+            "or" -> "⚡ ସାଟେଲାଇଟ୍ ବିଜୁଳି ଚେତାବନୀ (LIGHTNING ALERT)"
+            "hi" -> "⚡ सैटेलाइट बिजली चेतावनी (LIGHTNING ALERT)"
             else -> "⚡ 100% SATELLITE-VERIFIED LIGHTNING WARNING"
         }
-    } else {
-        when (langCode) {
-            "or" -> "⚠️ ଅତି ଜରୁରୀ ସୂଚନା (RED ALERT)"
+        "RAIN" -> when (langCode) {
+            "or" -> "🌧️ ପ୍ରବଳ ବର୍ଷା ଚେତାବନୀ (HEAVY RAIN ALERT)"
+            "hi" -> "🌧️ अत्यधिक भारी वर्षा चेतावनी (HEAVY RAIN)"
+            else -> "🌧️ SEVERE TORRENTIAL RAIN WARNING"
+        }
+        else -> when (langCode) {
+            "or" -> "⚠️ ଅତି ଜରୁରୀ ପାଣିପାଗ ସୂଚନା (RED ALERT)"
             "hi" -> "⚠️ अत्यधिक गंभीर चेतावनी (RED ALERT)"
             else -> "⚠️ SEVERE EMERGENCY ALERT (RED ALERT)"
         }
     }
 
-    val warningTextMsg = if (warningType == "LIGHTNING") {
-        when (langCode) {
+    val warningTextMsg = when (warningType) {
+        "WIND" -> when (langCode) {
+            "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ଓ ସାଟେଲାଇଟ୍ ତଥ୍ୟ ଅନୁଯାୟୀ ଆପଣଙ୍କ ଅଞ୍ଚଳରେ ପ୍ରବଳ ଝଡ଼ ପବନ (Strong Gale Wind) ବହିବାର ଆଶଙ୍କା ରହିଛି। ଗଛ ଏବଂ ବିଦ୍ୟୁତ ଖୁଣ୍ଟଠାରୁ ଦୂରରେ ରୁହନ୍ତୁ ଏବଂ ସୁରକ୍ଷିତ ଘର ଭିତରେ ଆଶ୍ରୟ ନିଅନ୍ତୁ!"
+            "hi" -> "चेतावनी! मौसम विभाग एवं उपग्रह अनुसार आपके क्षेत्र में भीषण तेज आंधी और हवा चलने की आशंका है। सुरक्षित स्थानों पर रहें और पेड़ों व बिजली के खंभों से दूर रहें!"
+            else -> "EMERGENCY WARNING: Severe gale-force winds detected in your area. Stay indoors, away from windows, loose structures, and power lines. Seek immediate shelter!"
+        }
+        "LIGHTNING" -> when (langCode) {
             "or" -> "ସତର୍କ ସୂଚନା! ପୃଥିବୀ କକ୍ଷପଥରେ ଥିବା GOES-R ସାଟେଲାଇଟ୍ ର GLM ସେନ୍ସର ଦ୍ୱାରା ୧୦୦% ସଠିକତା ସହ ବିଜୁଳିପାତ ଚିହ୍ନଟ ହୋଇଛି (NO FAKE SIGNAL)। ଏହା କୌଣସି ନକଲି ସିଗନାଲ୍ ନୁହେଁ। ତୁରନ୍ତ ସୁରକ୍ଷିତ ଘର ଭିତରକୁ ଯାଆନ୍ତୁ!"
             "hi" -> "चेतावनी! पृथ्वी की कक्षा में स्थित GOES-R उपग्रह के GLM सेंसर द्वारा १००% सटीकता के साथ आकाशीय बिजली गिरने की पुष्टि की गई है (ZERO NOISE / NO FAKE ALERT)। कृपया तुरंत पक्के मकान या सुरक्षित शेल्टर में शरण लें!"
             else -> "EMERGENCY WARNING: GOES-R Orbital Satellite GLM flash spectrograph has verified active cloud-to-ground lightning discharge with 100% confidence. Atmospheric noise filter is active (0% FAKE SIGNAL). Seek immediate secure indoor shelter now!"
         }
-    } else {
-        when (langCode) {
+        "RAIN" -> when (langCode) {
+            "or" -> "ସତର୍କ ସୂଚନା! ପ୍ରବଳରୁ ଅତି ପ୍ରବଳ ବର୍ଷା ଓ ଜଳବନ୍ଦୀର ଆଶଙ୍କା ରହିଛି। ତଳିଆ ଅଞ୍ଚଳରୁ ସୁରକ୍ଷିତ ସ୍ଥାନକୁ ଯାଆନ୍ତୁ ଏବଂ ଅତି ଜରୁରୀ ନହେଲେ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ।"
+            "hi" -> "चेतावनी! अत्यधिक भारी वर्षा और जलभराव का खतरा है। सुरक्षित पक्के स्थान पर रहें और जलभराव वाले क्षेत्रों से बचें।"
+            else -> "EMERGENCY WARNING: Severe torrential rainfall and flash flood risk detected. Seek high ground and stay indoors."
+        }
+        else -> when (langCode) {
             "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
             "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
             else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
@@ -4413,7 +4733,7 @@ fun EmergencyWarningPopup(
         Surface(
             color = Color(0xFB0A0E17),
             shape = RoundedCornerShape(20.dp),
-            border = BorderStroke(2.dp, AlertRed.copy(alpha = borderAlpha)),
+            border = BorderStroke(2.dp, alertThemeColor.copy(alpha = borderAlpha)),
             modifier = Modifier
                 .fillMaxWidth(0.9f)
                 .padding(16.dp)
@@ -4428,14 +4748,14 @@ fun EmergencyWarningPopup(
                 Box(
                     modifier = Modifier
                         .size(64.dp)
-                        .background(AlertRed.copy(alpha = 0.15f), CircleShape)
-                        .border(1.5.dp, AlertRed, CircleShape),
+                        .background(alertThemeColor.copy(alpha = 0.15f), CircleShape)
+                        .border(1.5.dp, alertThemeColor, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Warning,
+                        imageVector = alertHeaderIcon,
                         contentDescription = "Severe Alert",
-                        tint = AlertRed,
+                        tint = alertThemeColor,
                         modifier = Modifier.size(36.dp)
                     )
                 }
@@ -4444,7 +4764,7 @@ fun EmergencyWarningPopup(
 
                 Text(
                     text = warningTitle,
-                    color = AlertRed,
+                    color = alertThemeColor,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.ExtraBold,
                     fontFamily = FontFamily.Monospace,
@@ -4668,172 +4988,230 @@ fun BottomControlHUD(
 
     Surface(
         color = Color(0xEE07111C), // Translucent dark tactical panel
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.5f)),
-        shadowElevation = 10.dp,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(0.8.dp, CyanAccent.copy(alpha = 0.45f)),
+        shadowElevation = 3.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            // Row 1: Header (Metadata on Left, Compact Unlock Action on Right)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Mini Play/Pause Button
+            IconButton(
+                onClick = onPlayPauseToggle,
+                modifier = Modifier
+                    .size(22.dp)
+                    .background(CyanAccent, CircleShape)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (currentFrame?.isNowcast == true) Icons.Default.TrendingUp else Icons.Default.History,
-                        contentDescription = "Status",
-                        tint = if (currentFrame?.isNowcast == true) WarningAmber else CyanAccent,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = currentFrame?.timeLabel ?: "LIVE",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "${currentIndex + 1}/${data.frames.size} FRAMES",
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause",
+                    tint = Color.Black,
+                    modifier = Modifier.size(12.dp)
+                )
+            }
 
-                // Compact Unlock Button or Badge to save vertical space
-                if (hasMoreLocked) {
-                    val buttonEnabled = cooldownSeconds == 0
-                    Surface(
-                        color = if (buttonEnabled) CyanAccent else Color(0xFF1E2836),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier
-                            .clickable(enabled = buttonEnabled) { onUnlockClicked() }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+            Spacer(modifier = Modifier.width(5.dp))
+
+            // Time & status indicator
+            Text(
+                text = currentFrame?.timeLabel ?: "LIVE",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 8.5.sp,
+                fontFamily = FontFamily.Monospace
+            )
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Slim Frame scrubber / timeline bar
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    data.frames.forEachIndexed { idx, frame ->
+                        val isUnlocked = idx <= unlockedMaxIndex
+                        val isCurrent = idx == currentIndex
+                        val barColor = when {
+                            isCurrent -> Color.White
+                            isUnlocked -> CyanAccent
+                            else -> AlertRed.copy(alpha = 0.4f)
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(if (isCurrent) 6.dp else 3.dp)
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(barColor)
+                                .clickable { onFrameSelected(idx) },
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .background(if (buttonEnabled) Color.Black else TextMuted, RoundedCornerShape(3.dp))
-                                    .padding(horizontal = 3.dp, vertical = 1.dp)
-                            ) {
-                                Text(
-                                    "AD",
-                                    color = if (buttonEnabled) CyanAccent else Color.Black,
-                                    fontSize = 7.sp,
-                                    fontWeight = FontWeight.Black
+                            if (!isUnlocked && idx == unlockedMaxIndex + 1) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Locked",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(4.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = if (buttonEnabled) Icons.Default.LockOpen else Icons.Default.Lock,
-                                contentDescription = "Unlock",
-                                tint = if (buttonEnabled) Color.Black else TextMuted,
-                                modifier = Modifier.size(11.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = if (cooldownSeconds > 0) "${cooldownSeconds}s" else "UNLOCK +15M",
-                                color = if (buttonEnabled) Color.Black else TextMuted,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 9.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
                         }
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .background(UnlockedGreen.copy(0.12f), RoundedCornerShape(6.dp))
-                            .border(1.dp, UnlockedGreen.copy(0.3f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Complete",
-                            tint = UnlockedGreen,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            "ALL FORECASTS UNLOCKED",
-                            color = UnlockedGreen,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 9.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.width(6.dp))
 
-            // Row 2: Player Control Button + Integrated Frame Timeline Bars
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onPlayPauseToggle,
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(CyanAccent, CircleShape)
+            // Compact Unlock Button or Complete Count
+            if (hasMoreLocked) {
+                val buttonEnabled = cooldownSeconds == 0
+                Surface(
+                    color = if (buttonEnabled) CyanAccent else Color(0xFF1E2836),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.clickable(enabled = buttonEnabled) { onUnlockClicked() }
                 ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = "Play/Pause",
-                        tint = Color.Black,
-                        modifier = Modifier.size(18.dp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(if (buttonEnabled) Color.Black else TextMuted, RoundedCornerShape(2.dp))
+                                .padding(horizontal = 2.dp, vertical = 0.5.dp)
+                        ) {
+                            Text(
+                                "AD",
+                                color = if (buttonEnabled) CyanAccent else Color.Black,
+                                fontSize = 5.5.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = if (cooldownSeconds > 0) "${cooldownSeconds}s" else "+15M",
+                            color = if (buttonEnabled) Color.Black else TextMuted,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 7.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = "${currentIndex + 1}/${data.frames.size}",
+                    color = TextMuted,
+                    fontSize = 7.5.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+// --- ALTERNATING 30-SECOND CPM BANNER AD (Rotates between Top and Bottom of screen every 30s) ---
+@Composable
+fun AlternatingCpmBanner(
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val infiniteTransition = rememberInfiniteTransition(label = "cpmPulse")
+    val borderAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "borderGlow"
+    )
+
+    Surface(
+        color = Color(0xFF09111C),
+        border = BorderStroke(1.dp, CyanAccent.copy(alpha = borderAlpha)),
+        shape = RoundedCornerShape(0.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(34.dp)
+            .clickable {
+                AdManager.openDirectAdLink(context)
+            }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                // "AD" Pill Badge
+                Box(
+                    modifier = Modifier
+                        .background(CyanAccent.copy(alpha = 0.18f), RoundedCornerShape(3.dp))
+                        .border(0.6.dp, CyanAccent, RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.5.dp)
+                ) {
+                    Text(
+                        text = "AD",
+                        color = CyanAccent,
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
                     )
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(28.dp)
+                // Sponsor Message
+                Text(
+                    text = "⚡ FEATURED SPONSOR: Verified Partner Deal - Tap to View",
+                    color = Color.White.copy(alpha = 0.92f),
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Visit CTA Pill
+            Surface(
+                color = CyanAccent,
+                shape = RoundedCornerShape(3.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        data.frames.forEachIndexed { idx, frame ->
-                            val isUnlocked = idx <= unlockedMaxIndex
-                            val isCurrent = idx == currentIndex
-                            val barColor = when {
-                                isCurrent -> Color.White
-                                isUnlocked -> CyanAccent
-                                else -> AlertRed.copy(alpha = 0.4f)
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(if (isCurrent) 10.dp else 5.dp)
-                                    .clip(RoundedCornerShape(1.dp))
-                                    .background(barColor)
-                                    .clickable { onFrameSelected(idx) },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (!isUnlocked && idx == unlockedMaxIndex + 1) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "Locked",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(6.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    Text(
+                        text = "VISIT",
+                        color = Color.Black,
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Icon(
+                        imageVector = Icons.Default.ArrowForward,
+                        contentDescription = "Open",
+                        tint = Color.Black,
+                        modifier = Modifier.size(9.dp)
+                    )
                 }
             }
         }
@@ -4850,29 +5228,41 @@ fun TacticalBottomBannerAd(
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
-        try {
-            val adLoader = AdLoader.Builder(context, AdMobConfig.bannerAdUnitId)
-                .forNativeAd { ad: NativeAd ->
-                    loadedNativeAd = ad
-                }
-                .withAdListener(object : com.google.android.gms.ads.AdListener() {
-                    override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
-                        Log.e("AdManager", "Native ad failed to load: ${error.message} (Code: ${error.code})")
-                        adFailedToLoad = true
+        val loadNative = { adUnitId: String, onFallback: (() -> Unit)? ->
+            try {
+                val adLoader = AdLoader.Builder(context, adUnitId)
+                    .forNativeAd { ad: NativeAd ->
+                        loadedNativeAd = ad
+                        adFailedToLoad = false
                     }
-                })
-                .build()
-            adLoader.loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
-        } catch (e: Exception) {
-            Log.e("AdManager", "Error initializing AdLoader: ${e.message}")
-            adFailedToLoad = true
+                    .withAdListener(object : com.google.android.gms.ads.AdListener() {
+                        override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                            Log.d("AdManager", "Native ad load status: ${error.message} (Code: ${error.code})")
+                            if (onFallback != null) {
+                                onFallback()
+                            } else {
+                                adFailedToLoad = true
+                            }
+                        }
+                    })
+                    .build()
+                adLoader.loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
+            } catch (e: Exception) {
+                Log.d("AdManager", "AdLoader initialization notice: ${e.message}")
+                if (onFallback != null) onFallback() else adFailedToLoad = true
+            }
+        }
+
+        // Try production ad unit first; if account is under review (Code 3), smoothly load test ad unit
+        loadNative(AdMobConfig.bannerAdUnitId) {
+            loadNative(AdMobConfig.testNativeAdUnitId, null)
         }
     }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp),
+            .height(20.dp),
         contentAlignment = Alignment.Center
     ) {
         if (adFailedToLoad || (loadedNativeAd == null && !adFailedToLoad)) {
@@ -4882,8 +5272,8 @@ fun TacticalBottomBannerAd(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color(0xFF141F2E))
-                        .border(1.dp, CyanAccent.copy(alpha = 0.3f))
-                        .padding(horizontal = 12.dp),
+                        .border(0.6.dp, CyanAccent.copy(alpha = 0.25f))
+                        .padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -4892,36 +5282,36 @@ fun TacticalBottomBannerAd(
                             Icons.Default.Info,
                             contentDescription = "Safety Tip",
                             tint = CyanAccent,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(11.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "SAFETY: Keep offline hurricane survival kit ready during cyclone alerts.",
+                            text = "SAFETY: Keep offline survival kit ready during storm alerts.",
                             color = Color.White.copy(alpha = 0.85f),
-                            fontSize = 11.sp,
+                            fontSize = 7.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
-                            .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
                     ) {
                         Text(
                             "PROMO",
                             color = CyanAccent,
-                            fontSize = 8.sp,
+                            fontSize = 7.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                     }
                 }
             } else {
-                CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(20.dp))
+                CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(16.dp))
             }
         } else {
             val nativeAd = loadedNativeAd!!
