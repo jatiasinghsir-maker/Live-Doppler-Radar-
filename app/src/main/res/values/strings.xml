@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Doppler Radar</string>
+    <string name="google_app_id">1:123456789012:android:abcdef123456</string>
+    <string name="gcm_defaultSenderId">123456789012</string>
 </resources>

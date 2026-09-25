@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -58,6 +59,11 @@ import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.ads.nativead.NativeAd
+import com.google.android.gms.ads.nativead.NativeAdView
+import com.google.android.gms.ads.AdLoader
+import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.views.overlay.MapEventsOverlay
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.layout.onSizeChanged
@@ -648,6 +654,36 @@ fun RadarAppTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColors, content = content)
 }
 
+fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit) {
+    try {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+        if (lm != null) {
+            val isGpsEnabled = lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)
+            val isNetworkEnabled = lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+            if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            ) {
+                val provider = when {
+                    isGpsEnabled -> android.location.LocationManager.GPS_PROVIDER
+                    isNetworkEnabled -> android.location.LocationManager.NETWORK_PROVIDER
+                    else -> null
+                }
+                if (provider != null) {
+                    val loc = lm.getLastKnownLocation(provider)
+                    if (loc != null) {
+                        onLocationFound(GeoPoint(loc.latitude, loc.longitude))
+                        return
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("LocationTracker", "Error reading last location: ${e.message}")
+    }
+    // Bhubaneswar, India default fallback coordinate
+    onLocationFound(GeoPoint(20.2961, 85.8245))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainTacticalScreen(
@@ -703,6 +739,22 @@ fun MainTacticalScreen(
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
     var stormDetail by remember { mutableStateOf(StormDetail()) }
+
+    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
+    var destinationLocation by remember { mutableStateOf<GeoPoint?>(null) }
+    var activeTab by remember { mutableIntStateOf(0) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            requestDeviceLocation(context) { geo ->
+                userLocation = geo
+            }
+        } else {
+            userLocation = GeoPoint(20.2961, 85.8245) // Bhubaneswar default fallback
+        }
+    }
 
     LaunchedEffect(stormDetail, viewportSize) {
         if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -913,271 +965,470 @@ fun MainTacticalScreen(
                 frameTime = rainData?.frames?.getOrNull(currentFrameIndex)?.timeLabel ?: "LIVE"
             )
         },
+        bottomBar = {
+            Column {
+                NavigationBar(
+                    containerColor = Color(0xFF0F1622),
+                    contentColor = CyanAccent,
+                    tonalElevation = 8.dp,
+                    modifier = Modifier.fillMaxWidth().height(64.dp)
+                ) {
+                    NavigationBarItem(
+                        selected = activeTab == 0,
+                        onClick = { activeTab = 0 },
+                        label = { Text("RADAR MAP", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
+                        icon = { Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Black,
+                            selectedTextColor = CyanAccent,
+                            indicatorColor = CyanAccent,
+                            unselectedIconColor = TextMuted,
+                            unselectedTextColor = TextMuted
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = activeTab == 1,
+                        onClick = { activeTab = 1 },
+                        label = { Text("TELEMETRY", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
+                        icon = { Icon(Icons.Default.Assessment, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Black,
+                            selectedTextColor = CyanAccent,
+                            indicatorColor = CyanAccent,
+                            unselectedIconColor = TextMuted,
+                            unselectedTextColor = TextMuted
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = activeTab == 2,
+                        onClick = { activeTab = 2 },
+                        label = { Text("SURVIVAL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) },
+                        icon = { Icon(Icons.Default.AssignmentTurnedIn, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Black,
+                            selectedTextColor = CyanAccent,
+                            indicatorColor = CyanAccent,
+                            unselectedIconColor = TextMuted,
+                            unselectedTextColor = TextMuted
+                        )
+                    )
+                }
+
+                // Persistent Bottom Banner Ad (Loads Native Advanced Ad ca-app-pub-9598215288389011/7242706901)
+                TacticalBottomBannerAd(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(DarkBackground)
+                        .navigationBarsPadding()
+                        .padding(vertical = 4.dp)
+                )
+            }
+        },
         containerColor = DarkBackground
     ) { innerPadding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (isLoading) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(48.dp))
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "DOWNLINKING DOPPLER SATELLITE TILES...",
-                        color = CyanAccent,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            } else if (errorMessage != null) {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudOff,
-                        contentDescription = "Error",
-                        tint = AlertRed,
-                        modifier = Modifier.size(64.dp)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        errorMessage!!,
-                        color = Color.White,
-                        textAlign = TextAlign.Center,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(20.dp))
-                    Button(
-                        onClick = { fetchRadarData() },
-                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent)
-                    ) {
-                        Text("RETRY CONNECTION", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                }
-            } else {
-                val data = rainData!!
-                val currentFrame = data.frames.getOrNull(currentFrameIndex)
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .onSizeChanged { size ->
-                            viewportSize = size
-                        }
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomLevel = (zoomLevel * zoom).coerceIn(0.7f, 3.5f)
-                                panOffsetX += pan.x
-                                panOffsetY += pan.y
-                            }
-                        }
-                ) {
-                    // High-Resolution Tactical Geospatial Canvas (Basemap + Boundaries + Coastlines + Radar)
-                    TacticalGeospatialViewport(
-                        host = data.host,
-                        framePath = if (showRainRadar) currentFrame?.path else null,
-                        currentBasemap = currentBasemap,
-                        zoomLevel = zoomLevel,
-                        panOffsetX = panOffsetX,
-                        panOffsetY = panOffsetY,
-                        showGeography = showGeography,
-                        showStormTrack = showStormTrack,
-                        showLightning = showLightning,
-                        isDangerAlert = isDangerAlert,
-                        stormDetail = stormDetail,
-                        onStormEyeClick = { showStormSheet = true }
-                    )
-
-                    // 24-Hour Autonomous Severe Weather Guard Status Banner
-                    AutonomousGuardBadge(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 12.dp, start = 175.dp, end = 120.dp),
-                        isDanger = isDangerAlert,
-                        onClick = { showBasemapSheet = true }
-                    )
-
-                    // Top-Right Floating "LAYERS" Button
-                    Surface(
-                        color = SurfaceCard.copy(alpha = 0.95f),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.5.dp, CyanAccent),
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp)
-                            .clickable { showBasemapSheet = true }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Layers,
-                                contentDescription = "Layers",
-                                tint = CyanAccent,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "LAYERS",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                letterSpacing = 1.1.sp
-                            )
-                        }
-                    }
-
-                    // Station Telemetry Grid Badge
-                    StationTelemetryBadge(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(12.dp)
-                    )
-
-                    // dBZ Radar Intensity Scale Legend (beneath telemetry)
-                    RadarIntensityLegend(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(start = 12.dp, top = 66.dp)
-                    )
-
-                    // Tactical Live Weather Sensors: Wind Direction Gauge & Live Temperature Pill
-                    TacticalSensorsHUD(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(start = 12.dp, top = 114.dp),
-                        temperature = liveTemperature,
-                        windSpeed = liveWindSpeed,
-                        windDirection = liveWindDirection,
-                        isDanger = isDangerAlert
-                    )
-
-                    // Floating Layer Controls (Right Side Tactical FABs)
-                    FloatingLayerControls(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = 12.dp),
-                        showRainRadar = showRainRadar,
-                        showStormTrack = showStormTrack,
-                        showLightning = showLightning,
-                        showGeography = showGeography,
-                        onToggleRadar = {
-                            showRainRadar = !showRainRadar
-                            triggerLayerSwitchInterstitial()
-                        },
-                        onToggleStorm = {
-                            showStormTrack = !showStormTrack
-                            triggerLayerSwitchInterstitial()
-                        },
-                        onToggleLightning = {
-                            showLightning = !showLightning
-                            triggerLayerSwitchInterstitial()
-                        },
-                        onToggleGeography = {
-                            showGeography = !showGeography
-                            triggerLayerSwitchInterstitial()
-                        },
-                        onBasemapClick = { showBasemapSheet = true }
-                    )
-
-                    // Standalone Professional "My Location" Floating Action Button (FAB)
-                    FloatingActionButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                launch {
-                                    animate(
-                                        initialValue = zoomLevel,
-                                        targetValue = 1.0f,
-                                        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing)
-                                    ) { value, _ -> zoomLevel = value }
-                                }
-                                launch {
-                                    animate(
-                                        initialValue = panOffsetX,
-                                        targetValue = 0f,
-                                        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing)
-                                    ) { value, _ -> panOffsetX = value }
-                                }
-                                launch {
-                                    animate(
-                                        initialValue = panOffsetY,
-                                        targetValue = 0f,
-                                        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing)
-                                    ) { value, _ -> panOffsetY = value }
-                                }
-                            }
-                        },
-                        containerColor = SurfaceCard,
-                        contentColor = CyanAccent,
-                        shape = CircleShape,
-                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(bottom = 135.dp, end = 12.dp)
-                            .border(1.5.dp, CyanAccent, CircleShape)
-                            .size(56.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MyLocation,
-                            contentDescription = "My Location",
-                            tint = CyanAccent,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    // Bottom Column: Timeline Controls HUD & Mounted Bottom Banner Ad
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                if (isLoading) {
                     Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth(),
+                        modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        BottomControlHUD(
+                        CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(48.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            "DOWNLINKING DOPPLER SATELLITE TILES...",
+                            color = CyanAccent,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else if (errorMessage != null) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudOff,
+                            contentDescription = "Error",
+                            tint = AlertRed,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            errorMessage!!,
+                            color = Color.White,
+                            textAlign = TextAlign.Center,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Button(
+                            onClick = { fetchRadarData() },
+                            colors = ButtonDefaults.buttonColors(containerColor = CyanAccent)
+                        ) {
+                            Text("RETRY CONNECTION", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                } else {
+                    val data = rainData!!
+                    val currentFrame = data.frames.getOrNull(currentFrameIndex)
+
+                    if (activeTab == 0) {
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            data = data,
-                            currentIndex = currentFrameIndex,
-                            unlockedMaxIndex = unlockedMaxIndex,
-                            isPlaying = isPlaying,
-                            cooldownSeconds = cooldownSeconds,
-                            isAdReady = isAdReady,
-                            onPlayPauseToggle = { isPlaying = !isPlaying },
-                            onFrameSelected = { requestedIdx ->
-                                if (requestedIdx <= unlockedMaxIndex) {
-                                    currentFrameIndex = requestedIdx
-                                } else {
-                                    targetUnlockIndex = requestedIdx
-                                    showUnlockDialog = true
+                                .fillMaxSize()
+                                .onSizeChanged { size ->
+                                    viewportSize = size
                                 }
-                            },
-                            onUnlockClicked = {
-                                if (unlockedMaxIndex < data.frames.size - 1) {
-                                    targetUnlockIndex = unlockedMaxIndex + 1
-                                    showUnlockDialog = true
+                                .pointerInput(Unit) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        zoomLevel = (zoomLevel * zoom).coerceIn(0.7f, 3.5f)
+                                        panOffsetX += pan.x
+                                        panOffsetY += pan.y
+                                    }
+                                }
+                        ) {
+                            // High-Resolution Tactical Geospatial Canvas (Basemap + Boundaries + Coastlines + Radar + Events Overlay)
+                            TacticalGeospatialViewport(
+                                host = data.host,
+                                framePath = if (showRainRadar) currentFrame?.path else null,
+                                currentBasemap = currentBasemap,
+                                zoomLevel = zoomLevel,
+                                panOffsetX = panOffsetX,
+                                panOffsetY = panOffsetY,
+                                showGeography = showGeography,
+                                showStormTrack = showStormTrack,
+                                showLightning = showLightning,
+                                isDangerAlert = isDangerAlert,
+                                stormDetail = stormDetail,
+                                userLocation = userLocation,
+                                destinationLocation = destinationLocation,
+                                onLocationSelected = { destinationLocation = it },
+                                onStormEyeClick = { showStormSheet = true }
+                            )
+
+                            // 24-Hour Autonomous Severe Weather Guard Status Banner
+                            AutonomousGuardBadge(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 12.dp, start = 175.dp, end = 120.dp),
+                                isDanger = isDangerAlert,
+                                onClick = { showBasemapSheet = true }
+                            )
+
+                            // Top-Right Floating "LAYERS" Button
+                            Surface(
+                                color = SurfaceCard.copy(alpha = 0.95f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.5.dp, CyanAccent),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(12.dp)
+                                    .clickable { showBasemapSheet = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Layers,
+                                        contentDescription = "Layers",
+                                        tint = CyanAccent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "LAYERS",
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 1.1.sp
+                                    )
                                 }
                             }
-                        )
 
-                        // Banner Ad mounted stably at the bottom of the main map view underneath timeline controls
-                        TacticalBottomBannerAd(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(DarkBackground)
-                                .navigationBarsPadding()
-                                .padding(vertical = 4.dp)
+                            // Station Telemetry Grid Badge
+                            StationTelemetryBadge(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(12.dp)
+                            )
+
+                            // dBZ Radar Intensity Scale Legend (beneath telemetry)
+                            RadarIntensityLegend(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(start = 12.dp, top = 66.dp)
+                            )
+
+                            // Tactical Live Weather Sensors: Wind Direction Gauge & Live Temperature Pill
+                            TacticalSensorsHUD(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(start = 12.dp, top = 114.dp),
+                                temperature = liveTemperature,
+                                windSpeed = liveWindSpeed,
+                                windDirection = liveWindDirection,
+                                isDanger = isDangerAlert
+                            )
+
+                            // Floating Layer Controls (Right Side Tactical FABs)
+                            FloatingLayerControls(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .padding(end = 12.dp),
+                                showRainRadar = showRainRadar,
+                                showStormTrack = showStormTrack,
+                                showLightning = showLightning,
+                                showGeography = showGeography,
+                                onToggleRadar = {
+                                    showRainRadar = !showRainRadar
+                                    triggerLayerSwitchInterstitial()
+                                },
+                                onToggleStorm = {
+                                    showStormTrack = !showStormTrack
+                                    triggerLayerSwitchInterstitial()
+                                },
+                                onToggleLightning = {
+                                    showLightning = !showLightning
+                                    triggerLayerSwitchInterstitial()
+                                },
+                                onToggleGeography = {
+                                    showGeography = !showGeography
+                                    triggerLayerSwitchInterstitial()
+                                },
+                                onBasemapClick = { showBasemapSheet = true }
+                            )
+
+                            // Standalone Professional "My Location" Floating Action Button (FAB)
+                            // Triggers real GPS location retrieval with a beautiful rangefinder connection to storm eye
+                            FloatingActionButton(
+                                onClick = {
+                                    if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                                        requestDeviceLocation(context) { geo ->
+                                            userLocation = geo
+                                        }
+                                    } else {
+                                        locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                                    }
+                                },
+                                containerColor = SurfaceCard,
+                                contentColor = CyanAccent,
+                                shape = CircleShape,
+                                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(bottom = 135.dp, end = 12.dp)
+                                    .border(1.5.dp, CyanAccent, CircleShape)
+                                    .size(56.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MyLocation,
+                                    contentDescription = "My Location",
+                                    tint = CyanAccent,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            // Interactive Rangefinder Distance Floating HUD Card
+                            if (userLocation != null || destinationLocation != null) {
+                                val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
+
+                                Surface(
+                                    color = Color(0xEE0B121F),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.5.dp, WarningAmber),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(start = 12.dp, bottom = 135.dp)
+                                        .width(260.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Radar,
+                                                contentDescription = "Rangefinder",
+                                                tint = WarningAmber,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "TACTICAL RANGEFINDER ACTIVE",
+                                                color = WarningAmber,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        if (userLocation != null) {
+                                            val distMeters = userLocation!!.distanceToAsDouble(eyeGeo)
+                                            val distKm = distMeters / 1000.0
+                                            val distMiles = distKm * 0.621371
+                                            
+                                            Text(
+                                                text = "MY LOCATION:",
+                                                color = CyanAccent,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = "GPS: ${String.format("%.3f", userLocation!!.latitude)}°N, ${String.format("%.3f", userLocation!!.longitude)}°W",
+                                                color = Color.White.copy(alpha = 0.7f),
+                                                fontSize = 8.sp,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = "${String.format("%.1f", distKm)} KM (${String.format("%.1f", distMiles)} MI TO EYE)",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                        }
+
+                                        if (destinationLocation != null) {
+                                            val distMeters = destinationLocation!!.distanceToAsDouble(eyeGeo)
+                                            val distKm = distMeters / 1000.0
+                                            val distMiles = distKm * 0.621371
+                                            
+                                            Text(
+                                                text = "MARKED DESTINATION:",
+                                                color = WarningAmber,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = "TARGET: ${String.format("%.3f", destinationLocation!!.latitude)}°N, ${String.format("%.3f", destinationLocation!!.longitude)}°W",
+                                                color = Color.White.copy(alpha = 0.7f),
+                                                fontSize = 8.sp,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = "${String.format("%.1f", distKm)} KM (${String.format("%.1f", distMiles)} MI TO EYE)",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                        }
+
+                                        if (userLocation != null && destinationLocation != null) {
+                                            val distMeters = userLocation!!.distanceToAsDouble(destinationLocation!!)
+                                            val distKm = distMeters / 1000.0
+                                            val distMiles = distKm * 0.621371
+                                            
+                                            Text(
+                                                text = "USER TO DESTINATION DISTANCE:",
+                                                color = UnlockedGreen,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = "${String.format("%.1f", distKm)} KM (${String.format("%.1f", distMiles)} MILES)",
+                                                color = UnlockedGreen,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                        }
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            TextButton(
+                                                onClick = { 
+                                                    userLocation = null
+                                                    destinationLocation = null
+                                                },
+                                                contentPadding = PaddingValues(0.dp),
+                                                modifier = Modifier.height(24.dp)
+                                            ) {
+                                                Text("CLEAR ALL", color = AlertRed, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                            TextButton(
+                                                onClick = {
+                                                    panOffsetX = 0f
+                                                    panOffsetY = 0f
+                                                },
+                                                contentPadding = PaddingValues(0.dp),
+                                                modifier = Modifier.height(24.dp)
+                                            ) {
+                                                Text("CENTER EYE", color = CyanAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Bottom Column: Timeline Controls HUD (mounted safely on Map Tab)
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                BottomControlHUD(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    data = data,
+                                    currentIndex = currentFrameIndex,
+                                    unlockedMaxIndex = unlockedMaxIndex,
+                                    isPlaying = isPlaying,
+                                    cooldownSeconds = cooldownSeconds,
+                                    isAdReady = isAdReady,
+                                    onPlayPauseToggle = { isPlaying = !isPlaying },
+                                    onFrameSelected = { requestedIdx ->
+                                        if (requestedIdx <= unlockedMaxIndex) {
+                                            currentFrameIndex = requestedIdx
+                                        } else {
+                                            targetUnlockIndex = requestedIdx
+                                            showUnlockDialog = true
+                                        }
+                                    },
+                                    onUnlockClicked = {
+                                        if (unlockedMaxIndex < data.frames.size - 1) {
+                                            targetUnlockIndex = unlockedMaxIndex + 1
+                                            showUnlockDialog = true
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    } else if (activeTab == 1) {
+                        // High-Resolution Live Telemetry & Severe Weather Warning Panel
+                        TelemetryDashboardTab(
+                            liveTemperature = liveTemperature,
+                            liveWindSpeed = liveWindSpeed,
+                            liveWindDirection = liveWindDirection,
+                            livePrecipitation = livePrecipitation,
+                            liveCape = liveCape,
+                            isDangerAlert = isDangerAlert,
+                            stormDetail = stormDetail
                         )
+                    } else if (activeTab == 2) {
+                        // Interactive Civilian Survival Manual & Emergency Frequency Guide
+                        SurvivalManualTab()
                     }
                 }
             }
@@ -1993,13 +2244,15 @@ fun MainTacticalScreen(
                         .padding(top = 8.dp, bottom = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Developer Real Photo: Circular Avatar displaying developer.png
+                    // Developer Real Photo: Circular Avatar displaying developer.png in a perfect size and professional border
                     Box(
                         modifier = Modifier
-                            .size(100.dp)
+                            .size(120.dp) // Perfect professional size
                             .clip(CircleShape)
-                            .border(2.dp, CyanAccent, CircleShape)
-                            .background(Color(0xFF16202C)),
+                            .background(Color(0xFF16202C))
+                            .border(BorderStroke(2.dp, CyanAccent), CircleShape)
+                            .padding(4.dp) // Double-ring spacer
+                            .border(BorderStroke(1.dp, CyanAccent.copy(alpha = 0.5f)), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
@@ -2432,6 +2685,9 @@ fun TacticalGeospatialViewport(
     showLightning: Boolean,
     isDangerAlert: Boolean = false,
     stormDetail: StormDetail,
+    userLocation: GeoPoint?,
+    destinationLocation: GeoPoint?,
+    onLocationSelected: (GeoPoint) -> Unit,
     onStormEyeClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2456,6 +2712,21 @@ fun TacticalGeospatialViewport(
         }
     }
 
+    // Effect to animate map to selected locations when My Location / Tap is triggered
+    LaunchedEffect(userLocation) {
+        if (userLocation != null) {
+            mapView.controller.animateTo(userLocation)
+            mapView.controller.setZoom(6.5)
+        }
+    }
+
+    LaunchedEffect(destinationLocation) {
+        if (destinationLocation != null) {
+            mapView.controller.animateTo(destinationLocation)
+            mapView.controller.setZoom(6.5)
+        }
+    }
+
     AndroidView(
         factory = { mapView },
         update = { mv ->
@@ -2472,8 +2743,21 @@ fun TacticalGeospatialViewport(
                 it is TilesOverlay ||
                 it is Marker ||
                 it is Polyline ||
-                it is OsmPolygon
+                it is OsmPolygon ||
+                it is MapEventsOverlay
             }
+
+            // Capture taps on the map to set custom Rangefinder targets
+            val receiver = object : MapEventsReceiver {
+                override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
+                    onLocationSelected(p)
+                    return true
+                }
+                override fun longPressHelper(p: GeoPoint): Boolean {
+                    return false
+                }
+            }
+            mv.overlays.add(MapEventsOverlay(receiver))
 
             if (framePath != null) {
                 val radarSource = XYTileSource(
@@ -2617,6 +2901,80 @@ fun TacticalGeospatialViewport(
                     strokeWidth = 3f
                 }
                 mv.overlays.add(dangerPolygon)
+            }
+
+            // Draw My Location Marker & Laser Line if active
+            if (userLocation != null) {
+                val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
+                
+                val rangeLine = Polyline(mv).apply {
+                    setPoints(listOf(userLocation, eyeGeo))
+                    color = 0xFF00E5FF.toInt() // CyanAccent (Blue laser for user)
+                    width = 4.5f
+                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 10f), 0f)
+                }
+                mv.overlays.add(rangeLine)
+
+                val userMarker = Marker(mv).apply {
+                    position = userLocation
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    title = "MY GPS LOCATION"
+                    val distKm = userLocation.distanceToAsDouble(eyeGeo) / 1000.0
+                    subDescription = "Distance to eye: ${String.format("%.1f", distKm)} KM"
+                    
+                    val dotDrawable = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL
+                        setSize(28, 28)
+                        setColor(0x3300E5FF.toInt())
+                        setStroke(3, 0xFF00E5FF.toInt())
+                    }
+                    icon = dotDrawable
+                }
+                mv.overlays.add(userMarker)
+            }
+
+            // Draw Custom Destination Marker & Laser Line if active
+            if (destinationLocation != null) {
+                val eyeGeo = GeoPoint(stormDetail.latitude, stormDetail.longitude)
+                
+                val rangeLine = Polyline(mv).apply {
+                    setPoints(listOf(destinationLocation, eyeGeo))
+                    color = 0xFFFAAD14.toInt() // WarningAmber (Orange laser)
+                    width = 4.5f
+                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 10f), 0f)
+                }
+                mv.overlays.add(rangeLine)
+
+                val targetMarker = Marker(mv).apply {
+                    position = destinationLocation
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    title = "MARKED DESTINATION"
+                    val distKm = destinationLocation.distanceToAsDouble(eyeGeo) / 1000.0
+                    subDescription = "Distance to eye: ${String.format("%.1f", distKm)} KM"
+                    
+                    val dotDrawable = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL
+                        setSize(28, 28)
+                        setColor(0x33FAAD14.toInt())
+                        setStroke(3, 0xFFFAAD14.toInt())
+                    }
+                    icon = dotDrawable
+                }
+                mv.overlays.add(targetMarker)
+            }
+
+            // Draw Path from User to Destination if both are set
+            if (userLocation != null && destinationLocation != null) {
+                val pathLine = Polyline(mv).apply {
+                    setPoints(listOf(userLocation, destinationLocation))
+                    color = 0xFF34C759.toInt() // UnlockedGreen (Green line connecting user & destination)
+                    width = 3.5f
+                    outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 8f), 0f)
+                }
+                mv.overlays.add(pathLine)
             }
 
             mv.invalidate()
@@ -3239,91 +3597,613 @@ fun TacticalBottomBannerAd(
     modifier: Modifier = Modifier
 ) {
     var adFailedToLoad by remember { mutableStateOf(false) }
+    var loadedNativeAd by remember { mutableStateOf<NativeAd?>(null) }
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        try {
+            val adLoader = AdLoader.Builder(context, AdMobConfig.bannerAdUnitId)
+                .forNativeAd { ad: NativeAd ->
+                    loadedNativeAd = ad
+                }
+                .withAdListener(object : com.google.android.gms.ads.AdListener() {
+                    override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                        Log.e("AdManager", "Native ad failed to load: ${error.message} (Code: ${error.code})")
+                        adFailedToLoad = true
+                    }
+                })
+                .build()
+            adLoader.loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
+        } catch (e: Exception) {
+            Log.e("AdManager", "Error initializing AdLoader: ${e.message}")
+            adFailedToLoad = true
+        }
+    }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(54.dp),
+            .height(58.dp),
         contentAlignment = Alignment.Center
     ) {
-        if (adFailedToLoad) {
-            // High-fidelity fallback promo banner to display weather safety tips when ads are blocked or offline
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF141F2E))
-                    .border(1.dp, CyanAccent.copy(alpha = 0.3f))
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = "Safety Tip",
-                        tint = CyanAccent,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "SAFETY: Keep offline hurricane survival kit ready during cyclone alerts.",
-                        color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
+        if (adFailedToLoad || (loadedNativeAd == null && !adFailedToLoad)) {
+            if (adFailedToLoad) {
+                // High-fidelity fallback promo banner to display weather safety tips when ads are blocked or offline
+                Row(
                     modifier = Modifier
-                        .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .fillMaxSize()
+                        .background(Color(0xFF141F2E))
+                        .border(1.dp, CyanAccent.copy(alpha = 0.3f))
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        "PROMO",
-                        color = CyanAccent,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = "Safety Tip",
+                            tint = CyanAccent,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "SAFETY: Keep offline hurricane survival kit ready during cyclone alerts.",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            "PROMO",
+                            color = CyanAccent,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
+            } else {
+                CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(20.dp))
             }
         } else {
+            val nativeAd = loadedNativeAd!!
             AndroidView(
                 factory = { ctx ->
-                    AdView(ctx).apply {
-                        setAdSize(AdSize.BANNER)
-                        adUnitId = AdMobConfig.bannerAdUnitId
-                        try {
-                            setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
-                        } catch (e: Exception) {
-                            Log.w("AdManager", "Could not set software layer on AdView", e)
-                        }
-                        adListener = object : com.google.android.gms.ads.AdListener() {
-                            override fun onAdLoaded() {
-                                Log.d("AdManager", "Bottom banner ad loaded successfully.")
-                                adFailedToLoad = false
-                            }
+                    val nativeAdView = NativeAdView(ctx).apply {
+                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                        )
 
-                            override fun onAdFailedToLoad(error: LoadAdError) {
-                                Log.d("AdManager", "Bottom banner ad failed to load: $error")
-                                adFailedToLoad = true
+                        val container = android.widget.LinearLayout(ctx).apply {
+                            orientation = android.widget.LinearLayout.HORIZONTAL
+                            gravity = android.view.Gravity.CENTER_VERTICAL
+                            setPadding(12, 4, 12, 4)
+                            background = android.graphics.drawable.ColorDrawable(0xFF101622.toInt())
+                        }
+
+                        // 1. "Ad" Badge
+                        val badge = android.widget.TextView(ctx).apply {
+                            text = "Ad"
+                            setTextColor(0xFF00E5FF.toInt()) // CyanAccent
+                            textSize = 10f
+                            setPadding(6, 2, 6, 2)
+                            background = android.graphics.drawable.GradientDrawable().apply {
+                                setStroke(2, 0xFF00E5FF.toInt())
+                                cornerRadius = 4f
                             }
                         }
-                        loadAd(AdRequest.Builder().build())
+                        container.addView(badge)
+
+                        // Spacer
+                        container.addView(android.view.View(ctx).apply {
+                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
+                        })
+
+                        // 2. Icon View
+                        val icon = android.widget.ImageView(ctx).apply {
+                            layoutParams = android.widget.LinearLayout.LayoutParams(40, 40)
+                            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                        }
+                        container.addView(icon)
+                        this.iconView = icon
+
+                        // Spacer
+                        container.addView(android.view.View(ctx).apply {
+                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
+                        })
+
+                        // 3. Text Layout (Headline + Body)
+                        val textLayout = android.widget.LinearLayout(ctx).apply {
+                            orientation = android.widget.LinearLayout.VERTICAL
+                            layoutParams = android.widget.LinearLayout.LayoutParams(
+                                0,
+                                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                                1f
+                            )
+                        }
+
+                        val headline = android.widget.TextView(ctx).apply {
+                            setTextColor(android.graphics.Color.WHITE)
+                            textSize = 12f
+                            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        }
+                        textLayout.addView(headline)
+                        this.headlineView = headline
+
+                        val body = android.widget.TextView(ctx).apply {
+                            setTextColor(0xAAFFFFFF.toInt())
+                            textSize = 10f
+                            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL)
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        }
+                        textLayout.addView(body)
+                        this.bodyView = body
+
+                        container.addView(textLayout)
+
+                        // Spacer
+                        container.addView(android.view.View(ctx).apply {
+                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
+                        })
+
+                        // 4. Call To Action Button
+                        val cta = android.widget.Button(ctx).apply {
+                            layoutParams = android.widget.LinearLayout.LayoutParams(
+                                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                                72
+                            )
+                            textSize = 9f
+                            setTextColor(android.graphics.Color.BLACK)
+                            background = android.graphics.drawable.GradientDrawable().apply {
+                                setColor(0xFF00E5FF.toInt()) // CyanAccent
+                                cornerRadius = 6f
+                            }
+                            setPadding(12, 0, 12, 0)
+                        }
+                        container.addView(cta)
+                        this.callToActionView = cta
+
+                        addView(container)
                     }
+
+                    // Populate and bind
+                    (nativeAdView.headlineView as android.widget.TextView).text = nativeAd.headline
+                    if (nativeAd.body != null) {
+                        (nativeAdView.bodyView as android.widget.TextView).text = nativeAd.body
+                        nativeAdView.bodyView?.visibility = android.view.View.VISIBLE
+                    } else {
+                        nativeAdView.bodyView?.visibility = android.view.View.GONE
+                    }
+                    if (nativeAd.icon != null) {
+                        (nativeAdView.iconView as android.widget.ImageView).setImageDrawable(nativeAd.icon?.drawable)
+                        nativeAdView.iconView?.visibility = android.view.View.VISIBLE
+                    } else {
+                        nativeAdView.iconView?.visibility = android.view.View.GONE
+                    }
+                    if (nativeAd.callToAction != null) {
+                        (nativeAdView.callToActionView as android.widget.Button).text = nativeAd.callToAction
+                        nativeAdView.callToActionView?.visibility = android.view.View.VISIBLE
+                    } else {
+                        nativeAdView.callToActionView?.visibility = android.view.View.GONE
+                    }
+
+                    nativeAdView.setNativeAd(nativeAd)
+                    nativeAdView
                 },
-                onRelease = { adView ->
+                update = { view ->
+                    view.setNativeAd(nativeAd)
+                },
+                onRelease = { view ->
                     try {
-                        adView.destroy()
+                        view.destroy()
                     } catch (e: Exception) {
-                        Log.w("AdManager", "Error destroying AdView", e)
+                        Log.e("AdManager", "Error destroying NativeAdView: ${e.message}")
                     }
                 },
-                modifier = Modifier.wrapContentSize()
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
 }
+
+// --- TELEMETRY DASHBOARD TAB ---
+@Composable
+fun TelemetryDashboardTab(
+    liveTemperature: Float,
+    liveWindSpeed: Float,
+    liveWindDirection: Float,
+    livePrecipitation: Float,
+    liveCape: Float,
+    isDangerAlert: Boolean,
+    stormDetail: StormDetail
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(if (isDangerAlert) AlertRed else UnlockedGreen)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isDangerAlert) "⚠️ SEVERE METEOROLOGICAL ALERT" else "✓ LEVEL SECURE",
+                            color = if (isDangerAlert) AlertRed else UnlockedGreen,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Real-time atmospheric telemetry feeding from Doppler station network and Copernicus satellite constellations.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(
+                "STATION & SENSOR TELEMETRY READINGS",
+                color = CyanAccent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(modifier = Modifier.weight(1f)) {
+                    TelemetryCard(
+                        icon = Icons.Default.Thermostat,
+                        label = "STATION TEMP",
+                        value = "${String.format("%.1f", liveTemperature)}°C",
+                        subValue = "Convective standard",
+                        color = if (liveTemperature > 35f) AlertRed else CyanAccent
+                    )
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    TelemetryCard(
+                        icon = Icons.Default.Air,
+                        label = "WIND VELOCITY",
+                        value = "${String.format("%.1f", liveWindSpeed)} km/h",
+                        subValue = "Direction: ${String.format("%.0f", liveWindDirection)}°",
+                        color = if (liveWindSpeed > 50f) AlertRed else CyanAccent
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(modifier = Modifier.weight(1f)) {
+                    TelemetryCard(
+                        icon = Icons.Default.WaterDrop,
+                        label = "PRECIPITATION",
+                        value = "${String.format("%.1f", livePrecipitation)} mm/h",
+                        subValue = "Accumulated rate",
+                        color = if (livePrecipitation > 5.0f) AlertRed else CyanAccent
+                    )
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    TelemetryCard(
+                        icon = Icons.Default.ElectricBolt,
+                        label = "CAPE INSTABILITY",
+                        value = "${String.format("%.0f", liveCape)} J/kg",
+                        subValue = "Severe storm fuel",
+                        color = if (liveCape > 1000f) AlertRed else CyanAccent
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "SAFFIR-SIMPSON CYCLONE CLASSIFICATION",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    val categories = listOf(
+                        Triple("Category 1", "74 - 95 MPH", "Minimal damage"),
+                        Triple("Category 2", "96 - 110 MPH", "Moderate damage"),
+                        Triple("Category 3", "111 - 129 MPH", "Devastating damage"),
+                        Triple("Category 4", "130 - 156 MPH", "Catastrophic damage (Helene)"),
+                        Triple("Category 5", "157+ MPH", "Complete destruction")
+                    )
+
+                    categories.forEach { (cat, speed, desc) ->
+                        val isActive = cat.contains(stormDetail.category.removePrefix("CAT-")) || (cat == "Category 4" && stormDetail.category.contains("CAT-4"))
+                        val rowBg = if (isActive) AlertRed.copy(alpha = 0.2f) else Color.Transparent
+                        val rowBorder = if (isActive) BorderStroke(1.dp, AlertRed) else null
+                        
+                        Surface(
+                            color = rowBg,
+                            shape = RoundedCornerShape(6.dp),
+                            border = rowBorder,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = cat,
+                                        color = if (isActive) AlertRed else Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = desc,
+                                        color = Color.White.copy(alpha = 0.6f),
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                Text(
+                                    text = speed,
+                                    color = if (isActive) AlertRed else CyanAccent,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "STORM EYE COORDINATE PATHWAY HISTORY",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    val pastTrack = listOf(
+                        Triple("24 hours ago", "21.2° N, 81.3° W", "CAT-2 sustained"),
+                        Triple("12 hours ago", "23.5° N, 80.5° W", "CAT-3 convective expansion"),
+                        Triple("Current Eye", "${stormDetail.latitude}° N, ${stormDetail.longitude}° W", "${stormDetail.category} helicity peak")
+                    )
+
+                    pastTrack.forEach { (time, coords, status) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(time, color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(status, color = TextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            Text(coords, color = WarningAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- SURVIVAL MANUAL TAB ---
+@Composable
+fun SurvivalManualTab() {
+    val checklistItems = remember {
+        listOf(
+            "water" to "Water Supply (3 days: 1 gal/person/day)",
+            "food" to "Non-Perishable Food (Canned items, energy bars)",
+            "radio" to "Battery-Powered Weather Radio (NOAA Frequency)",
+            "flashlight" to "Tactical Flashlights & Replacement Cells",
+            "firstaid" to "First Aid Medical Kit & Lifesaving Meds",
+            "powerbank" to "Portable Phone Chargers & Back-Up Banks",
+            "documents" to "Emergency Secure Document Pouch",
+            "multitool" to "Utility Tool Knife & Landfall Whistle"
+        )
+    }
+    
+    val checklistState = remember {
+        mutableStateMapOf(
+            "water" to false,
+            "food" to false,
+            "radio" to false,
+            "flashlight" to false,
+            "firstaid" to false,
+            "powerbank" to false,
+            "documents" to false,
+            "multitool" to false
+        )
+    }
+
+    val checkedCount = checklistState.values.count { it }
+    val progressPercent = (checkedCount.toFloat() / checklistItems.size.toFloat())
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "TACTICAL PREPAREDNESS INDEX",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { progressPercent },
+                        color = if (progressPercent == 1f) UnlockedGreen else CyanAccent,
+                        trackColor = Color(0xFF1B2330),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "SECURED ITEMS: $checkedCount / ${checklistItems.size}",
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = "${(progressPercent * 100).toInt()}% READY",
+                            color = if (progressPercent == 1f) UnlockedGreen else CyanAccent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                "CIVILIAN DISASTER SURVIVAL CHECKLIST",
+                color = CyanAccent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        items(checklistItems.size) { index ->
+            val (key, label) = checklistItems[index]
+            val isChecked = checklistState[key] ?: false
+            
+            Surface(
+                color = if (isChecked) Color(0xFF0F1A24) else SurfaceCard,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, if (isChecked) CyanAccent.copy(alpha = 0.5f) else SurfaceBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { checklistState[key] = !isChecked }
+                    .padding(vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = if (isChecked) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                            contentDescription = null,
+                            tint = if (isChecked) UnlockedGreen else TextMuted,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = label,
+                            color = if (isChecked) Color.White else Color.White.copy(alpha = 0.8f),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (isChecked) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "EMERGENCY NOAA FREQUENCIES",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Tune shortwave weather radios to the following VHF frequencies for automated civilian broadcasts:\n\n" +
+                               "• WX1: 162.400 MHz\n" +
+                               "• WX2: 162.425 MHz\n" +
+                               "• WX3: 162.450 MHz\n" +
+                               "• WX4: 162.475 MHz",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
