@@ -1,4 +1,4 @@
-package com.example
+package com.jsvision.dopplerradar
 
 import android.app.Activity
 import android.os.Bundle

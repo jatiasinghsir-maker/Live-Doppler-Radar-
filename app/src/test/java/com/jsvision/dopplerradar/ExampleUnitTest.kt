@@ -1,4 +1,4 @@
-package com.example
+package com.jsvision.dopplerradar
 
 import org.junit.Assert.*
 import org.junit.Test
