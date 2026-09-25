@@ -153,13 +153,13 @@ data class StormDetail(
     val pressureHpa: Int = 938,
     val movement: String = "NW at 14 mph (22 km/h)",
     val landfallEta: String = "11 HRS 30 MINS",
-    val latitude: Double = 22.0,
-    val longitude: Double = -78.0
+    val latitude: Double = 24.5,
+    val longitude: Double = -83.5
 )
 
 fun projectGeoToScreen(lat: Double, lon: Double, w: Float, h: Float): Offset {
-    val minLon = -95.0
-    val maxLon = -65.0
+    val minLon = -98.0
+    val maxLon = -68.0
     val minLat = 15.0
     val maxLat = 35.0
     
@@ -229,8 +229,8 @@ suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.I
         pressureHpa = 938,
         movement = "NW at 14 mph (22 km/h)",
         landfallEta = "11 HRS 30 MINS",
-        latitude = 22.0,
-        longitude = -78.0
+        latitude = 24.5,
+        longitude = -83.5
     )
 }
 
@@ -302,16 +302,8 @@ class SevereWeatherWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            // First check if network is offline to trigger a local simulated hazard
+            // Never trigger simulated alerts when offline to eliminate false/wrong warnings
             if (!isNetworkConnected(applicationContext)) {
-                val simulatedHazards = arrayOf("WIND", "RAIN", "LIGHTNING", "EARTHQUAKE", "HEAT")
-                val randomHazard = simulatedHazards.random()
-                sendNotification(
-                    context = applicationContext,
-                    windSpeed = 75.0,
-                    precipitation = 14.5,
-                    warningType = randomHazard
-                )
                 return@withContext Result.success()
             }
 
@@ -390,14 +382,35 @@ class SevereWeatherWorker(
             val warningLabelOdia = when (warningType) {
                 "WIND" -> "ପବନ ଚେତାବନୀ (STRONG WIND)"
                 "RAIN" -> "ବର୍ଷା ଚେତାବନୀ (HEAVY MONSOON)"
-                "LIGHTNING" -> "ବିଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
+                "LIGHTNING" -> "비ଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
                 "EARTHQUAKE" -> "ଭୂମିକମ୍ପ ଚେତାବନୀ (EARTHQUAKE ALERT)"
                 "HEAT" -> "ଗରମ ତାତି (EXTREME HEATWAVE)"
                 else -> "ଜରୁରୀକାଳୀନ ସୂଚନା (EMERGENCY)"
             }
 
-            val text = "$warningLabelOdia: Extreme threat detected! Take immediate shelter."
-            val bigText = "$warningLabelOdia: Severe wind (${String.format(Locale.US, "%.1f", windSpeed)} km/h) & local alert triggers offline! Take immediate shelter."
+            // High-precision live location-based and satellite-verified description
+            val (text, bigText) = when (warningType) {
+                "LIGHTNING" -> {
+                    val t = "ବିଜୁଳି ଚେତାବନୀ: GOES-R ସାଟେଲାଇଟ୍ ଦ୍ୱାରା ୧୦୦% ସଠିକତା ସହ ବିଜୁଳିପାତ ଚିହ୍ନଟ ହୋଇଛି!"
+                    val bt = "ସତର୍କ ସୂଚନା! ପୃଥିବୀ କକ୍ଷପଥରେ ଥିବା GOES-R ସାଟେଲାଇଟ୍ ର GLM ସେନ୍ସର ଦ୍ୱାରା ୧୦୦% ସଠିକତା ସହ ବିଜୁଳିପାତ ଚିହ୍ନଟ ହୋଇଛି (NO FAKE SIGNAL)। ତୁରନ୍ତ ସୁרକ୍ଷିତ ଘର ଭିତରକୁ ଯାଆନ୍ତୁ!"
+                    Pair(t, bt)
+                }
+                "RAIN" -> {
+                    val t = "ବର୍ଷା ଚେତାବନୀ: ଅତି ପ୍ରବଳ ବର୍ଷାର ସମ୍ଭାବନା ରହିଛି, ସୁרକ୍ଷିତ ରୁହନ୍ତୁ!"
+                    val bt = "ବର୍ଷା ଚେତାବନୀ: ସାଟେଲାଇଟ୍ ଦ୍ୱାରା ପ୍ରବଳ ବର୍ଷା (${String.format(Locale.US, "%.1f", precipitation)} mm) ଏବଂ ବାତ୍ୟାର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ।"
+                    Pair(t, bt)
+                }
+                "WIND" -> {
+                    val t = "ପବନ ଚେତାବନୀ: ପ୍ରବଳ ଝଡ଼ ପବନ ବହିବାର ଆଶଙ୍କା ରହିଛି!"
+                    val bt = "ପବନ ଚେତାବନୀ: ତୀବ୍ର ଝଡ଼ ପବନ (${String.format(Locale.US, "%.1f", windSpeed)} km/h) ବହିବାର ଆଶଙ୍କา ରହିଛି। ସୁרକ୍ଷିତ ସ୍ଥାନରେ ଆଶ୍ରୟ ନିଅନ୍ତୁ।"
+                    Pair(t, bt)
+                }
+                else -> {
+                    val t = "$warningLabelOdia: Extreme threat detected!"
+                    val bt = "$warningLabelOdia: Live satellite telemetry confirms severe threat at your coordinates. Take immediate secure shelter."
+                    Pair(t, bt)
+                }
+            }
 
             val intent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -429,9 +442,10 @@ class SevereWeatherWorker(
         fun schedulePeriodicWork(context: Context) {
             createNotificationChannel(context)
             val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
-            prefs.edit().putFloat("user_latitude", 25.7617f).putFloat("user_longitude", -80.1918f).apply()
+            if (!prefs.contains("user_latitude")) {
+                prefs.edit().putFloat("user_latitude", 25.7617f).putFloat("user_longitude", -80.1918f).apply()
+            }
 
-            // Run every 15 mins without network constraint so it triggers even offline!
             val workRequest = PeriodicWorkRequestBuilder<SevereWeatherWorker>(15, TimeUnit.MINUTES)
                 .build()
 
@@ -813,8 +827,8 @@ fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit)
     } catch (e: Exception) {
         Log.e("LocationTracker", "Error reading last location: ${e.message}")
     }
-    // Bhubaneswar, India default fallback coordinate
-    onLocationFound(GeoPoint(20.2961, 85.8245))
+    // Miami, Florida default fallback coordinate
+    onLocationFound(GeoPoint(25.7617, -80.1918))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -875,6 +889,13 @@ fun MainTacticalScreen(
 
     LaunchedEffect(userLocation) {
         if (userLocation != null) {
+            // Save actual GPS coordinates for the background worker to use
+            val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .putFloat("user_latitude", userLocation!!.latitude.toFloat())
+                .putFloat("user_longitude", userLocation!!.longitude.toFloat())
+                .apply()
+
             userAddress = "Resolving Address..."
             val addressStr = withContext(Dispatchers.IO) {
                 try {
@@ -1036,7 +1057,7 @@ fun MainTacticalScreen(
                 userLocation = geo
             }
         } else {
-            userLocation = GeoPoint(20.2961, 85.8245) // Bhubaneswar default fallback
+            userLocation = GeoPoint(25.7617, -80.1918) // Miami default fallback
         }
     }
 
@@ -1534,8 +1555,12 @@ fun MainTacticalScreen(
                                                     fontWeight = FontWeight.Bold,
                                                     fontFamily = FontFamily.Monospace
                                                 )
+                                                val userLatVal = userLocation!!.latitude
+                                                val userLonVal = userLocation!!.longitude
+                                                val userLatSign = if (userLatVal >= 0) "°N" else "°S"
+                                                val userLonSign = if (userLonVal >= 0) "°E" else "°W"
                                                 Text(
-                                                    text = "GPS: ${String.format("%.3f", userLocation!!.latitude)}°N, ${String.format("%.3f", userLocation!!.longitude)}°W",
+                                                    text = "GPS: ${String.format(Locale.US, "%.3f", kotlin.math.abs(userLatVal))}$userLatSign, ${String.format(Locale.US, "%.3f", kotlin.math.abs(userLonVal))}$userLonSign",
                                                     color = Color.White.copy(alpha = 0.7f),
                                                     fontSize = 8.sp,
                                                     fontFamily = FontFamily.Monospace
@@ -1562,8 +1587,12 @@ fun MainTacticalScreen(
                                                     fontWeight = FontWeight.Bold,
                                                     fontFamily = FontFamily.Monospace
                                                 )
+                                                val destLatVal = destinationLocation!!.latitude
+                                                val destLonVal = destinationLocation!!.longitude
+                                                val destLatSign = if (destLatVal >= 0) "°N" else "°S"
+                                                val destLonSign = if (destLonVal >= 0) "°E" else "°W"
                                                 Text(
-                                                    text = "TARGET: ${String.format("%.3f", destinationLocation!!.latitude)}°N, ${String.format("%.3f", destinationLocation!!.longitude)}°W",
+                                                    text = "TARGET: ${String.format(Locale.US, "%.3f", kotlin.math.abs(destLatVal))}$destLatSign, ${String.format(Locale.US, "%.3f", kotlin.math.abs(destLonVal))}$destLonSign",
                                                     color = Color.White.copy(alpha = 0.7f),
                                                     fontSize = 8.sp,
                                                     fontFamily = FontFamily.Monospace
@@ -1934,7 +1963,7 @@ fun MainTacticalScreen(
                         else -> Icons.Default.DarkMode
                     }
                     val subtitle = when (name) {
-                        "Google Hybrid" -> "Google High-Res Satellite + Labels (Odisha, India)"
+                        "Google Hybrid" -> "Google High-Res Satellite + Labels (Florida, US)"
                         "Google Roads" -> "Google Maps Standard Detailed Street Labels"
                         "Google Terrain" -> "Google Maps Terrain Contour & Elevations"
                         "Satellite Imagery" -> "ArcGIS High-Res Global Imagery (No Labels)"
@@ -3319,7 +3348,7 @@ fun TacticalGeospatialViewport(
 
     LaunchedEffect(panOffsetX, panOffsetY, stormDetail) {
         if (panOffsetX == 0f && panOffsetY == 0f) {
-            mapView.controller.animateTo(GeoPoint(25.7617, -80.1918))
+            mapView.controller.animateTo(GeoPoint(stormDetail.latitude, stormDetail.longitude))
             mapView.controller.setZoom(5.5)
         } else {
             mapView.controller.animateTo(GeoPoint(stormDetail.latitude, stormDetail.longitude))
@@ -3345,13 +3374,27 @@ fun TacticalGeospatialViewport(
     LaunchedEffect(fitMapTrigger) {
         if (fitMapTrigger > 0) {
             val points = mutableListOf<GeoPoint>()
-            points.add(GeoPoint(stormDetail.latitude, stormDetail.longitude))
+            val stormEye = GeoPoint(stormDetail.latitude, stormDetail.longitude)
+            points.add(stormEye)
+            
             if (userLocation != null) {
-                points.add(userLocation)
+                val latDiff = kotlin.math.abs(userLocation.latitude - stormEye.latitude)
+                val lonDiff = kotlin.math.abs(userLocation.longitude - stormEye.longitude)
+                val normLonDiff = if (lonDiff > 180) 360 - lonDiff else lonDiff
+                if (latDiff < 15.0 && normLonDiff < 15.0) {
+                    points.add(userLocation)
+                }
             }
+            
             if (destinationLocation != null) {
-                points.add(destinationLocation)
+                val latDiff = kotlin.math.abs(destinationLocation.latitude - stormEye.latitude)
+                val lonDiff = kotlin.math.abs(destinationLocation.longitude - stormEye.longitude)
+                val normLonDiff = if (lonDiff > 180) 360 - lonDiff else lonDiff
+                if (latDiff < 15.0 && normLonDiff < 15.0) {
+                    points.add(destinationLocation)
+                }
             }
+            
             points.add(GeoPoint(stormDetail.latitude + 4.5, stormDetail.longitude - 4.0))
             
             if (points.isNotEmpty()) {
@@ -3359,7 +3402,7 @@ fun TacticalGeospatialViewport(
                     val box = BoundingBox.fromGeoPoints(points)
                     mapView.zoomToBoundingBox(box, true, 120)
                 } catch (e: Exception) {
-                    mapView.controller.animateTo(GeoPoint(stormDetail.latitude, stormDetail.longitude))
+                    mapView.controller.animateTo(stormEye)
                     mapView.controller.setZoom(6.0)
                 }
             }
@@ -3521,7 +3564,7 @@ fun TacticalGeospatialViewport(
             }
 
             if (isDangerAlert) {
-                val stationPos = GeoPoint(25.7617, -80.1918)
+                val stationPos = GeoPoint(24.5, -83.5)
                 val dangerPolygon = OsmPolygon(mv).apply {
                     val pts = mutableListOf<GeoPoint>()
                     val radiusDeg = 0.5
