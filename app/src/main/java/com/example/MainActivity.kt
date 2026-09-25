@@ -803,40 +803,63 @@ fun RadarAppTheme(content: @Composable () -> Unit) {
 
 fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit) {
     try {
+        android.widget.Toast.makeText(context, "Scanning satellite coordinates...", android.widget.Toast.LENGTH_SHORT).show()
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
         if (lm != null) {
             val isGpsEnabled = lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)
             val isNetworkEnabled = lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+            val isPassiveEnabled = lm.isProviderEnabled(android.location.LocationManager.PASSIVE_PROVIDER)
+            
             if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
             ) {
-                val provider = when {
-                    isGpsEnabled -> android.location.LocationManager.GPS_PROVIDER
-                    isNetworkEnabled -> android.location.LocationManager.NETWORK_PROVIDER
-                    else -> null
-                }
-                if (provider != null) {
-                    val loc = lm.getLastKnownLocation(provider)
-                    if (loc != null) {
-                        onLocationFound(GeoPoint(loc.latitude, loc.longitude))
-                        // Try requesting a fresh update too, but return last known immediately for speed
-                    }
-
-                    // Request a single fresh update to guarantee location is fetched on first tap
-                    val listener = object : android.location.LocationListener {
-                        override fun onLocationChanged(location: android.location.Location) {
-                            onLocationFound(GeoPoint(location.latitude, location.longitude))
-                            try {
-                                lm.removeUpdates(this)
-                            } catch (e: Exception) {}
+                var bestLoc: android.location.Location? = null
+                val providers = listOfNotNull(
+                    if (isGpsEnabled) android.location.LocationManager.GPS_PROVIDER else null,
+                    if (isNetworkEnabled) android.location.LocationManager.NETWORK_PROVIDER else null,
+                    if (isPassiveEnabled) android.location.LocationManager.PASSIVE_PROVIDER else null
+                )
+                
+                for (prov in providers) {
+                    val last = lm.getLastKnownLocation(prov)
+                    if (last != null) {
+                        if (bestLoc == null || last.time > bestLoc.time) {
+                            bestLoc = last
                         }
-                        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
-                        override fun onProviderEnabled(provider: String) {}
-                        override fun onProviderDisabled(provider: String) {}
                     }
-                    lm.requestLocationUpdates(provider, 0L, 0f, listener, context.mainLooper)
+                }
+                
+                if (bestLoc != null) {
+                    val latStr = String.format(Locale.US, "%.4f", bestLoc.latitude)
+                    val lonStr = String.format(Locale.US, "%.4f", bestLoc.longitude)
+                    android.widget.Toast.makeText(context, "Satellite GPS Position Synced: $latStr, $lonStr", android.widget.Toast.LENGTH_LONG).show()
+                    onLocationFound(GeoPoint(bestLoc.latitude, bestLoc.longitude))
+                }
+                
+                val listener = object : android.location.LocationListener {
+                    override fun onLocationChanged(location: android.location.Location) {
+                        val latStr = String.format(Locale.US, "%.4f", location.latitude)
+                        val lonStr = String.format(Locale.US, "%.4f", location.longitude)
+                        android.widget.Toast.makeText(context, "GPS Coordinates Updated: $latStr, $lonStr", android.widget.Toast.LENGTH_SHORT).show()
+                        onLocationFound(GeoPoint(location.latitude, location.longitude))
+                        try {
+                            lm.removeUpdates(this)
+                        } catch (e: Exception) {}
+                    }
+                    override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                }
+                
+                for (prov in providers) {
+                    lm.requestLocationUpdates(prov, 0L, 0f, listener, context.mainLooper)
+                }
+                
+                if (bestLoc != null) {
                     return
                 }
+            } else {
+                android.widget.Toast.makeText(context, "Location permission required", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     } catch (e: Exception) {
@@ -876,6 +899,7 @@ fun MainTacticalScreen(
     var onSimulatedAdReward by remember { mutableStateOf<(() -> Unit)?>(null) }
     var targetUnlockIndex by remember { mutableIntStateOf(-1) }
     var currentBasemap by remember { mutableStateOf("Google Hybrid") }
+    var isLeftHudExpanded by remember { mutableStateOf(true) } // Expanded by default for a professional meteorological HUD on app start!
 
     // Layer Toggles
     var showRainRadar by remember { mutableStateOf(true) }
@@ -1438,25 +1462,122 @@ fun MainTacticalScreen(
                                 onStormEyeClick = { showStormSheet = true }
                             )
 
-                            // Unified Left-Side Tactical Information Column Stack
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(16.dp)
-                                    .width(180.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                StationTelemetryBadge()
-                                TacticalSensorsHUD(
-                                    temperature = liveTemperature,
-                                    windSpeed = liveWindSpeed,
-                                    windDirection = liveWindDirection,
-                                    isDanger = isDangerAlert
-                                )
-                                AutonomousGuardBadge(
-                                    isDanger = isDangerAlert,
-                                    onClick = { showBasemapSheet = true }
-                                )
+                            // Unified Left-Side Tactical Information Panel (Collapsible to keep map 100% visible)
+                            if (!isLeftHudExpanded) {
+                                Button(
+                                    onClick = { isLeftHudExpanded = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xDD07111C)),
+                                    border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.8f)),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(start = 16.dp, top = 16.dp)
+                                        .height(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Assessment,
+                                        contentDescription = "Expand HUD",
+                                        tint = CyanAccent,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "SHOW SENSORS HUD",
+                                        color = Color.White,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.Black,
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(16.dp)
+                                        .width(185.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Mini Collapse Button
+                                    Button(
+                                        onClick = { isLeftHudExpanded = false },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xEE07111C)),
+                                        border = BorderStroke(1.dp, AlertRed.copy(alpha = 0.6f)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(30.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Collapse",
+                                            tint = AlertRed,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "HIDE SENSORS HUD",
+                                            color = Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Black,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+
+                                    StationTelemetryBadge(userLocation = userLocation)
+                                    TacticalSensorsHUD(
+                                        temperature = liveTemperature,
+                                        windSpeed = liveWindSpeed,
+                                        windDirection = liveWindDirection,
+                                        isDanger = isDangerAlert
+                                    )
+                                    AutonomousGuardBadge(
+                                        isDanger = isDangerAlert,
+                                        onClick = { showBasemapSheet = true }
+                                    )
+                                }
+                            }
+
+                            // Standalone SEVERE ALERT ACTIVE near lower-left of the map (above timeline)
+                            if (isDangerAlert) {
+                                Surface(
+                                    color = Color(0xDD07111C),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.2.dp, AlertRed),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(start = 16.dp, bottom = if (destinationLocation != null) 310.dp else 148.dp) // Avoid overlap with rangefinder HUD if open!
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(AlertRed)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Severe Warning",
+                                            tint = AlertRed,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "SEVERE ALERT ACTIVE",
+                                            color = AlertRed,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Black,
+                                            fontFamily = FontFamily.Monospace,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                    }
+                                }
                             }
 
                             // Right-Side Tactical Floating Control Rail (Includes RADAR, STORM, LIGHTNING, BORDERS and BASEMAP)
@@ -1706,49 +1827,7 @@ fun MainTacticalScreen(
                                 }
                             }
 
-                            // Compact "● ⚠ SEVERE ALERT ACTIVE" Floating HUD Badge near lower-left portion of the map
-                            if (isDangerAlert) {
-                                Surface(
-                                    color = Color(0xDD07111C), // Translucent dark tactical panel
-                                    shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.2.dp, AlertRed),
-                                    shadowElevation = 8.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomStart)
-                                        .padding(
-                                            start = 16.dp, 
-                                            bottom = if (destinationLocation != null) 300.dp else 148.dp
-                                        )
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(AlertRed)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = "Severe Alert Active",
-                                            tint = AlertRed,
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "SEVERE ALERT ACTIVE",
-                                            color = AlertRed,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Black,
-                                            fontFamily = FontFamily.Monospace,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    }
-                                }
-                            }
+
 
                             // Bottom Column: Timeline Controls HUD (mounted safely on Map Tab)
                             Column(
@@ -3796,7 +3875,7 @@ fun RadarIntensityLegend(modifier: Modifier = Modifier) {
 
 // --- TELEMETRY BADGE ---
 @Composable
-fun StationTelemetryBadge(modifier: Modifier = Modifier) {
+fun StationTelemetryBadge(userLocation: GeoPoint?, modifier: Modifier = Modifier) {
     Surface(
         color = Color(0xDD07111C), // Translucent dark glass navy
         shape = RoundedCornerShape(16.dp),
@@ -3814,8 +3893,15 @@ fun StationTelemetryBadge(modifier: Modifier = Modifier) {
                 letterSpacing = 0.5.sp
             )
             Spacer(modifier = Modifier.height(2.dp))
+            val coordStr = if (userLocation != null) {
+                val latDir = if (userLocation.latitude >= 0) "N" else "S"
+                val lonDir = if (userLocation.longitude >= 0) "E" else "W"
+                "${String.format(Locale.US, "%.2f", kotlin.math.abs(userLocation.latitude))}°$latDir, ${String.format(Locale.US, "%.2f", kotlin.math.abs(userLocation.longitude))}°$lonDir"
+            } else {
+                "25.76°N, 80.19°W"
+            }
             Text(
-                "25.76°N, 80.19°W",
+                text = coordStr,
                 color = CyanAccent,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.ExtraBold,
