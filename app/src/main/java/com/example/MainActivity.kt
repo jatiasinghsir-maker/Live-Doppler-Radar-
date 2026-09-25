@@ -85,6 +85,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.media.RingtoneManager
+import android.media.Ringtone
+import android.app.PendingIntent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
@@ -228,6 +233,37 @@ suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.I
     )
 }
 
+object EmergencySirenController {
+    private var emergencyRingtone: Ringtone? = null
+
+    fun playEmergencySiren(context: Context) {
+        try {
+            if (emergencyRingtone != null && emergencyRingtone!!.isPlaying) {
+                return
+            }
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            emergencyRingtone = RingtoneManager.getRingtone(context.applicationContext, uri)?.apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    isLooping = true
+                }
+                play()
+            }
+        } catch (e: Exception) {
+            Log.e("Siren", "Error playing ringtone", e)
+        }
+    }
+
+    fun stopEmergencySiren() {
+        try {
+            emergencyRingtone?.stop()
+            emergencyRingtone = null
+        } catch (e: Exception) {
+            Log.e("Siren", "Error stopping ringtone", e)
+        }
+    }
+}
+
 val basemapLayers = mapOf(
     "Satellite Imagery" to "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/4/6/4",
     "Standard Street" to "https://tile.openstreetmap.org/4/4/6.png",
@@ -240,8 +276,41 @@ class SevereWeatherWorker(
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
 
+    private fun isNetworkConnected(context: Context): Boolean {
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val capabilities = cm.getNetworkCapabilities(cm.activeNetwork)
+                return capabilities != null && (
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val activeNetwork = cm.activeNetworkInfo
+                @Suppress("DEPRECATION")
+                return activeNetwork != null && activeNetwork.isConnected
+            }
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            // First check if network is offline to trigger a local simulated hazard
+            if (!isNetworkConnected(applicationContext)) {
+                val simulatedHazards = arrayOf("WIND", "RAIN", "LIGHTNING", "EARTHQUAKE", "HEAT")
+                val randomHazard = simulatedHazards.random()
+                sendNotification(
+                    context = applicationContext,
+                    windSpeed = 75.0,
+                    precipitation = 14.5,
+                    warningType = randomHazard
+                )
+                return@withContext Result.success()
+            }
+
             val prefs = applicationContext.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
             val lat = prefs.getFloat("user_latitude", 25.7617f)
             val lon = prefs.getFloat("user_longitude", -80.1918f)
@@ -271,10 +340,16 @@ class SevereWeatherWorker(
             val severeThunder = maxCape > 1000.0 || weatherCode in thunderCodes
 
             if (extremeRain || highWind || severeThunder) {
+                val wType = when {
+                    severeThunder -> "LIGHTNING"
+                    extremeRain -> "RAIN"
+                    else -> "WIND"
+                }
                 sendNotification(
                     applicationContext,
                     windSpeed = windSpeed,
-                    precipitation = precipitation
+                    precipitation = precipitation,
+                    warningType = wType
                 )
             }
             Result.success()
@@ -304,11 +379,33 @@ class SevereWeatherWorker(
             }
         }
 
-        fun sendNotification(context: Context, windSpeed: Double, precipitation: Double, isTest: Boolean = false) {
+        fun sendNotification(context: Context, windSpeed: Double, precipitation: Double, warningType: String, isTest: Boolean = false) {
             createNotificationChannel(context)
             val title = if (isTest) "⚠️ [TEST] EXTREME WEATHER WARNING" else "⚠️ EXTREME WEATHER WARNING"
-            val text = "Severe wind (${String.format(Locale.US, "%.1f", windSpeed)} km/h) & thunderstorm detected near your coordinates! Take immediate shelter."
-            val bigText = "Severe wind (${String.format(Locale.US, "%.1f", windSpeed)} km/h) & thunderstorm detected near your coordinates! Precipitation: ${String.format(Locale.US, "%.1f", precipitation)} mm. Take immediate shelter."
+            
+            val warningLabelOdia = when (warningType) {
+                "WIND" -> "ପବନ ଚେତାବନୀ (STRONG WIND)"
+                "RAIN" -> "ବର୍ଷା ଚେତାବନୀ (HEAVY MONSOON)"
+                "LIGHTNING" -> "ବିଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
+                "EARTHQUAKE" -> "ଭୂମିକମ୍ପ ଚେତାବନୀ (EARTHQUAKE ALERT)"
+                "HEAT" -> "ଗରମ ତାତି (EXTREME HEATWAVE)"
+                else -> "ଜରୁରୀକାଳୀନ ସୂଚନା (EMERGENCY)"
+            }
+
+            val text = "$warningLabelOdia: Extreme threat detected! Take immediate shelter."
+            val bigText = "$warningLabelOdia: Severe wind (${String.format(Locale.US, "%.1f", windSpeed)} km/h) & local alert triggers offline! Take immediate shelter."
+
+            val intent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("EMERGENCY_TRIGGER", true)
+                putExtra("EMERGENCY_TRIGGER_TYPE", warningType)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
 
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
@@ -317,6 +414,7 @@ class SevereWeatherWorker(
                 .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setFullScreenIntent(pendingIntent, true)
                 .setAutoCancel(true)
                 .build()
 
@@ -329,12 +427,8 @@ class SevereWeatherWorker(
             val prefs = context.getSharedPreferences("severe_weather_prefs", Context.MODE_PRIVATE)
             prefs.edit().putFloat("user_latitude", 25.7617f).putFloat("user_longitude", -80.1918f).apply()
 
+            // Run every 15 mins without network constraint so it triggers even offline!
             val workRequest = PeriodicWorkRequestBuilder<SevereWeatherWorker>(15, TimeUnit.MINUTES)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -581,9 +675,31 @@ object AdManager {
 
 class MainActivity : ComponentActivity() {
 
+    private var activeEmergencyTriggerType by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Authoritatively turn screen on and show on top of lock screen during extreme weather events
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            km?.requestDismissKeyguard(this, null)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+
+        if (intent != null && intent.getBooleanExtra("EMERGENCY_TRIGGER", false)) {
+            activeEmergencyTriggerType = intent.getStringExtra("EMERGENCY_TRIGGER_TYPE") ?: "WIND"
+        }
 
         // Pre-create WebView HTTP Cache directories to prevent Chromium opendir errors on startup
         try {
@@ -637,10 +753,20 @@ class MainActivity : ComponentActivity() {
                         },
                         showInterstitialAd = { activity, onAdClosed ->
                             AdManager.showInterstitialAd(activity, onAdClosed)
-                        }
+                        },
+                        activeEmergencyType = activeEmergencyTriggerType,
+                        onDismissEmergency = { activeEmergencyTriggerType = null }
                     )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("EMERGENCY_TRIGGER", false)) {
+            activeEmergencyTriggerType = intent.getStringExtra("EMERGENCY_TRIGGER_TYPE") ?: "WIND"
         }
     }
 }
@@ -692,7 +818,9 @@ fun requestDeviceLocation(context: Context, onLocationFound: (GeoPoint) -> Unit)
 fun MainTacticalScreen(
     loadRewardedAd: (onAdLoaded: (Boolean) -> Unit) -> Unit,
     showRewardedAd: (activity: Activity, onUserEarnedReward: () -> Unit, onAdFailed: () -> Unit) -> Unit,
-    showInterstitialAd: (activity: Activity, onAdClosed: () -> Unit) -> Unit
+    showInterstitialAd: (activity: Activity, onAdClosed: () -> Unit) -> Unit,
+    activeEmergencyType: String?,
+    onDismissEmergency: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -733,6 +861,52 @@ fun MainTacticalScreen(
 
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var destinationLocation by remember { mutableStateOf<GeoPoint?>(null) }
+
+    // Dynamic high-resolution address geocoding states for local coordinates (tikona)
+    var userAddress by remember { mutableStateOf("") }
+    var targetAddress by remember { mutableStateOf("") }
+
+    LaunchedEffect(userLocation) {
+        if (userLocation != null) {
+            userAddress = "Resolving Address..."
+            val addressStr = withContext(Dispatchers.IO) {
+                try {
+                    val geocoder = android.location.Geocoder(context, java.util.Locale.getDefault())
+                    val addresses = geocoder.getFromLocation(userLocation!!.latitude, userLocation!!.longitude, 1)
+                    if (!addresses.isNullOrEmpty()) {
+                        val addr = addresses[0]
+                        val parts = mutableListOf<String>()
+                        for (i in 0..addr.maxAddressLineIndex) {
+                            parts.add(addr.getAddressLine(i))
+                        }
+                        parts.joinToString(", ")
+                    } else ""
+                } catch (e: Exception) { "" }
+            }
+            userAddress = if (addressStr.isNotEmpty()) addressStr else "Lat: ${String.format("%.4f", userLocation!!.latitude)}, Lon: ${String.format("%.4f", userLocation!!.longitude)}"
+        }
+    }
+
+    LaunchedEffect(destinationLocation) {
+        if (destinationLocation != null) {
+            targetAddress = "Resolving Address..."
+            val addressStr = withContext(Dispatchers.IO) {
+                try {
+                    val geocoder = android.location.Geocoder(context, java.util.Locale.getDefault())
+                    val addresses = geocoder.getFromLocation(destinationLocation!!.latitude, destinationLocation!!.longitude, 1)
+                    if (!addresses.isNullOrEmpty()) {
+                        val addr = addresses[0]
+                        val parts = mutableListOf<String>()
+                        for (i in 0..addr.maxAddressLineIndex) {
+                            parts.add(addr.getAddressLine(i))
+                        }
+                        parts.joinToString(", ")
+                    } else ""
+                } catch (e: Exception) { "" }
+            }
+            targetAddress = if (addressStr.isNotEmpty()) addressStr else "Lat: ${String.format("%.4f", destinationLocation!!.latitude)}, Lon: ${String.format("%.4f", destinationLocation!!.longitude)}"
+        }
+    }
 
     // ------------------------------------------------------------------------
     // TEXT-TO-SPEECH (TTS) DYNAMIC LOCALIZED EMERGENCY VOICE BROADCASTER
@@ -824,24 +998,12 @@ fun MainTacticalScreen(
         activeTts.speak(selectedText, TextToSpeech.QUEUE_FLUSH, null, "TacticalEmergencyBroadcaster")
     }
 
-    // Listen to changes in danger state & TTS readiness to DIRECTLY and AUTOMATICALLY speak voice alerts
-    LaunchedEffect(isDangerAlert, isTtsReady) {
-        if (isDangerAlert && isTtsReady) {
+    // Listen to changes in danger state to DIRECTLY show pop-up warning
+    LaunchedEffect(isDangerAlert) {
+        if (isDangerAlert) {
             showEmergencyPopup = true
-            val detectedLang = detectLanguageFromLocation(userLocation)
-            val textToSpeak = when (detectedLang) {
-                "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କา ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
-                "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
-                else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
-            }
-            delay(800) // Small delay for smooth UI transition
-            triggerVoiceWarning(textToSpeak, detectedLang)
-        } else if (!isDangerAlert) {
+        } else {
             showEmergencyPopup = false
-            if (isSpeaking) {
-                tts?.stop()
-                isSpeaking = false
-            }
         }
     }
 
@@ -1228,81 +1390,38 @@ fun MainTacticalScreen(
                                 stormDetail = stormDetail,
                                 userLocation = userLocation,
                                 destinationLocation = destinationLocation,
+                                userAddress = userAddress,
+                                destinationAddress = targetAddress,
                                 onLocationSelected = { destinationLocation = it },
                                 onStormEyeClick = { showStormSheet = true }
                             )
 
-                            // 24-Hour Autonomous Severe Weather Guard Status Banner
-                            AutonomousGuardBadge(
+                            // Unified Left-Side Tactical Information Column Stack
+                            Column(
                                 modifier = Modifier
-                                    .align(Alignment.TopCenter)
-                                    .padding(top = 12.dp, start = 175.dp, end = 120.dp),
-                                isDanger = isDangerAlert,
-                                onClick = { showBasemapSheet = true }
-                            )
-
-                            // Top-Right Floating "LAYERS" Button
-                            Surface(
-                                color = SurfaceCard.copy(alpha = 0.95f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.5.dp, CyanAccent),
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(12.dp)
-                                    .clickable { showBasemapSheet = true }
+                                    .align(Alignment.TopStart)
+                                    .padding(16.dp)
+                                    .width(180.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Layers,
-                                        contentDescription = "Layers",
-                                        tint = CyanAccent,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "LAYERS",
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        letterSpacing = 1.1.sp
-                                    )
-                                }
+                                StationTelemetryBadge()
+                                TacticalSensorsHUD(
+                                    temperature = liveTemperature,
+                                    windSpeed = liveWindSpeed,
+                                    windDirection = liveWindDirection,
+                                    isDanger = isDangerAlert
+                                )
+                                AutonomousGuardBadge(
+                                    isDanger = isDangerAlert,
+                                    onClick = { showBasemapSheet = true }
+                                )
                             }
 
-                            // Station Telemetry Grid Badge
-                            StationTelemetryBadge(
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(12.dp)
-                            )
-
-                            // dBZ Radar Intensity Scale Legend (beneath telemetry)
-                            RadarIntensityLegend(
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(start = 12.dp, top = 66.dp)
-                            )
-
-                            // Tactical Live Weather Sensors: Wind Direction Gauge & Live Temperature Pill
-                            TacticalSensorsHUD(
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(start = 12.dp, top = 114.dp),
-                                temperature = liveTemperature,
-                                windSpeed = liveWindSpeed,
-                                windDirection = liveWindDirection,
-                                isDanger = isDangerAlert
-                            )
-
-                            // Floating Layer Controls (Right Side Tactical FABs)
+                            // Right-Side Tactical Floating Control Rail (Includes RADAR, STORM, LIGHTNING, BORDERS and BASEMAP)
                             FloatingLayerControls(
                                 modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .padding(end = 12.dp),
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 16.dp, end = 16.dp),
                                 showRainRadar = showRainRadar,
                                 showStormTrack = showStormTrack,
                                 showLightning = showLightning,
@@ -1344,7 +1463,7 @@ fun MainTacticalScreen(
                                 elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .padding(bottom = 88.dp, end = 12.dp)
+                                    .padding(bottom = 148.dp, end = 16.dp)
                                     .border(1.5.dp, CyanAccent, CircleShape)
                                     .size(56.dp)
                             ) {
@@ -1366,7 +1485,7 @@ fun MainTacticalScreen(
                                     border = BorderStroke(1.5.dp, WarningAmber),
                                     modifier = Modifier
                                         .align(Alignment.BottomStart)
-                                        .padding(start = 12.dp, bottom = 88.dp)
+                                        .padding(start = 16.dp, bottom = 148.dp)
                                         .width(260.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp)) {
@@ -1505,7 +1624,7 @@ fun MainTacticalScreen(
                                 BottomControlHUD(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
                                     data = data,
                                     currentIndex = currentFrameIndex,
                                     unlockedMaxIndex = unlockedMaxIndex,
@@ -1999,6 +2118,7 @@ fun MainTacticalScreen(
                                     context = context,
                                     windSpeed = 68.4,
                                     precipitation = 14.8,
+                                    warningType = "WIND",
                                     isTest = true
                                 )
                                 showBasemapSheet = false
@@ -2333,32 +2453,14 @@ fun MainTacticalScreen(
         }
     }
 
-    // Active Real-Time Emergency Voice & Visual Broadcaster Popup
+    // Active Real-Time Emergency Warning Popup
     EmergencyWarningPopup(
         isVisible = showEmergencyPopup,
         onDismissRequest = { 
             showEmergencyPopup = false 
-            if (isSpeaking) {
-                tts?.stop()
-                isSpeaking = false
-            }
         },
         userLocation = userLocation,
-        langCode = detectLanguageFromLocation(userLocation),
-        isSpeaking = isSpeaking,
-        onTriggerVoice = {
-            val detectedLang = detectLanguageFromLocation(userLocation)
-            val textToSpeak = when (detectedLang) {
-                "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
-                "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
-                else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
-            }
-            triggerVoiceWarning(textToSpeak, detectedLang)
-        },
-        onStopVoice = {
-            tts?.stop()
-            isSpeaking = false
-        }
+        langCode = detectLanguageFromLocation(userLocation)
     )
 
     // About Developer Dialog (Tactical Glassmorphic Modal)
@@ -2623,6 +2725,184 @@ fun MainTacticalScreen(
             }
         }
     }
+
+    if (activeEmergencyType != null) {
+        FullScreenEmergencyOverlay(
+            warningType = activeEmergencyType,
+            onDismiss = onDismissEmergency
+        )
+    }
+}
+
+@Composable
+fun FullScreenEmergencyOverlay(
+    warningType: String, // "WIND", "RAIN", "LIGHTNING", "EARTHQUAKE", "HEAT"
+    onDismiss: () -> Unit
+) {
+    var timeLeft by remember { mutableIntStateOf(60) }
+    val context = LocalContext.current
+
+    // Automatically count down and play ringtone
+    LaunchedEffect(Unit) {
+        EmergencySirenController.playEmergencySiren(context)
+        while (timeLeft > 0) {
+            delay(1000)
+            timeLeft--
+        }
+        EmergencySirenController.stopEmergencySiren()
+        onDismiss()
+    }
+
+    // Ensure siren is stopped when composable leaves composition
+    DisposableEffect(Unit) {
+        onDispose {
+            EmergencySirenController.stopEmergencySiren()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = {
+            EmergencySirenController.stopEmergencySiren()
+            onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0F0505))
+                .clickable(enabled = false) {}, // consume clicks
+            contentAlignment = Alignment.Center
+        ) {
+            // Flashing Red Alert Border
+            val infiniteTransition = rememberInfiniteTransition(label = "flash")
+            val alphaGlow by infiniteTransition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 0.95f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(500, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "glow"
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(8.dp, AlertRed.copy(alpha = alphaGlow))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    val hazardIcon = when (warningType) {
+                        "WIND" -> Icons.Default.Air
+                        "RAIN" -> Icons.Default.WaterDrop
+                        "LIGHTNING" -> Icons.Default.FlashOn
+                        "EARTHQUAKE" -> Icons.Default.Warning
+                        "HEAT" -> Icons.Default.WbSunny
+                        else -> Icons.Default.Warning
+                    }
+                    
+                    val hazardLabel = when (warningType) {
+                        "WIND" -> "ପବନ ଚେତାବନୀ (STRONG WIND)"
+                        "RAIN" -> "ବର୍ଷା ଚେତାବନୀ (HEAVY MONSOON)"
+                        "LIGHTNING" -> "ବିଜୁଳି ଚେତାବନୀ (LIGHTNING STRIKE)"
+                        "EARTHQUAKE" -> "ଭୂମିକମ୍ପ ଚେତାବନୀ (EARTHQUAKE ALERT)"
+                        "HEAT" -> "ଗରମ ତାତି (EXTREME HEATWAVE)"
+                        else -> "ଜରୁରୀକାଳୀନ ସୂଚନା (EMERGENCY)"
+                    }
+
+                    val hazardColor = when (warningType) {
+                        "HEAT" -> WarningAmber
+                        else -> AlertRed
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(100.dp)
+                            .background(hazardColor.copy(alpha = 0.2f), CircleShape)
+                            .border(2.dp, hazardColor, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = hazardIcon,
+                            contentDescription = warningType,
+                            tint = hazardColor,
+                            modifier = Modifier.size(56.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Text(
+                        text = "🚨 ଜରୁରୀକାଳୀନ ସୂଚନା 🚨",
+                        color = AlertRed,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = hazardLabel,
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ ଏବଂ ସତର୍କତା ଅବଲମ୍ବନ କରନ୍ତୁ।",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    // Time left indicator
+                    Text(
+                        text = "AUTO-DISMISS IN: ${timeLeft}S",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            EmergencySirenController.stopEmergencySiren()
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = UnlockedGreen),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .width(200.dp)
+                            .height(48.dp)
+                    ) {
+                        Text(
+                            "O.K. (ବନ୍ଦ କରନ୍ତୁ)",
+                            color = Color.Black,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -2698,12 +2978,14 @@ fun TopHUDBar(
         shadowElevation = 8.dp,
         modifier = Modifier
             .fillMaxWidth()
+            .statusBarsPadding()
+            .height(72.dp)
             .border(width = 1.dp, color = SurfaceBorder)
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -2738,10 +3020,10 @@ fun TopHUDBar(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .background(AlertRed.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
-                        .border(1.dp, AlertRed, RoundedCornerShape(6.dp))
+                        .background(AlertRed.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                        .border(1.dp, AlertRed.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
                         .clickable { onStormClick() }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -2750,32 +3032,32 @@ fun TopHUDBar(
                             tint = AlertRed,
                             modifier = Modifier.size(14.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             "CAT-4 HELENE",
                             color = AlertRed,
-                            fontSize = 10.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(10.dp))
 
-                IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onRefresh, modifier = Modifier.size(40.dp)) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Refresh",
                         tint = CyanAccent,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
                 // TOP-RIGHT APP BAR: Clean vector person icon ONLY (no real image/photo)
-                IconButton(onClick = onDeveloperClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onDeveloperClick, modifier = Modifier.size(40.dp)) {
                     Icon(
                         imageVector = Icons.Default.Person,
                         contentDescription = "About Developer",
@@ -2830,6 +3112,8 @@ fun TacticalGeospatialViewport(
     stormDetail: StormDetail,
     userLocation: GeoPoint?,
     destinationLocation: GeoPoint?,
+    userAddress: String,
+    destinationAddress: String,
     onLocationSelected: (GeoPoint) -> Unit,
     onStormEyeClick: () -> Unit
 ) {
@@ -2855,7 +3139,7 @@ fun TacticalGeospatialViewport(
         if (framePath != null) {
             val radarSource = XYTileSource(
                 "RainViewerRadar",
-                0, 18, 256, "/2/1_1.png",
+                0, 7, 256, "/2/1_1.png",
                 arrayOf("$host$framePath/256/")
             )
             provider = MapTileProviderBasic(context, radarSource)
@@ -3001,6 +3285,7 @@ fun TacticalGeospatialViewport(
                     icon = dotDrawable
                 }
                 mv.overlays.add(landfallMarker)
+                landfallMarker.showInfoWindow()
 
                 val stormMarker = Marker(mv).apply {
                     position = eyeGeo
@@ -3020,6 +3305,7 @@ fun TacticalGeospatialViewport(
                     }
                 }
                 mv.overlays.add(stormMarker)
+                stormMarker.showInfoWindow()
             }
 
             if (showLightning) {
@@ -3087,7 +3373,7 @@ fun TacticalGeospatialViewport(
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     title = "MY GPS LOCATION"
                     val distKm = userLocation.distanceToAsDouble(eyeGeo) / 1000.0
-                    subDescription = "Distance to eye: ${String.format("%.1f", distKm)} KM"
+                    subDescription = "ADDRESS: $userAddress\nDistance to eye: ${String.format("%.1f", distKm)} KM"
                     
                     val dotDrawable = android.graphics.drawable.GradientDrawable().apply {
                         shape = android.graphics.drawable.GradientDrawable.OVAL
@@ -3098,6 +3384,7 @@ fun TacticalGeospatialViewport(
                     icon = dotDrawable
                 }
                 mv.overlays.add(userMarker)
+                userMarker.showInfoWindow()
             }
 
             // Draw Custom Destination Marker & Laser Line if active
@@ -3118,7 +3405,7 @@ fun TacticalGeospatialViewport(
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     title = "MARKED DESTINATION"
                     val distKm = destinationLocation.distanceToAsDouble(eyeGeo) / 1000.0
-                    subDescription = "Distance to eye: ${String.format("%.1f", distKm)} KM"
+                    subDescription = "ADDRESS: $destinationAddress\nDistance to eye: ${String.format("%.1f", distKm)} KM"
                     
                     val dotDrawable = android.graphics.drawable.GradientDrawable().apply {
                         shape = android.graphics.drawable.GradientDrawable.OVAL
@@ -3129,6 +3416,7 @@ fun TacticalGeospatialViewport(
                     icon = dotDrawable
                 }
                 mv.overlays.add(targetMarker)
+                targetMarker.showInfoWindow()
             }
 
             // Draw Path from User to Destination if both are set
@@ -3192,23 +3480,61 @@ fun RadarIntensityLegend(modifier: Modifier = Modifier) {
 fun StationTelemetryBadge(modifier: Modifier = Modifier) {
     Surface(
         color = SurfaceCard.copy(alpha = 0.92f),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, SurfaceBorder),
-        modifier = modifier
+        modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                "GRID: 25.76°N, 80.19°W",
-                color = CyanAccent,
+                "GRID DATA",
+                color = TextMuted,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             )
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                "RADAR: GULF-DOPPLER #04",
-                color = Color.White,
-                fontSize = 9.sp,
+                "25.76°N, 80.19°W",
+                color = CyanAccent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
+            )
+            Text(
+                "GULF-DOPPLER #04",
+                color = Color.White.copy(alpha = 0.9f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace
+            )
+            
+            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = SurfaceBorder, thickness = 1.dp)
+            Spacer(modifier = Modifier.height(10.dp))
+            
+            Text(
+                "INTENSITY (dBZ)",
+                color = TextMuted,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                UnlockedGreen,
+                                WarningAmber,
+                                AlertRed,
+                                Color(0xFFA200FF)
+                            )
+                        )
+                    )
             )
         }
     }
@@ -3267,83 +3593,95 @@ fun TacticalSensorsHUD(
     windDirection: Float,
     isDanger: Boolean
 ) {
-    Column(modifier = modifier) {
-        // Temperature Pill
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Temperature Card
         Surface(
             color = SurfaceCard.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.2.dp, CyanAccent.copy(alpha = 0.6f))
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, CyanAccent.copy(alpha = 0.4f)),
+            modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                modifier = Modifier.padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     Icons.Default.Thermostat,
                     contentDescription = null,
                     tint = CyanAccent,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(20.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "${String.format(Locale.US, "%.1f", temperature)}°C",
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
-                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "TEMPERATURE",
+                        color = TextMuted,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${String.format(Locale.US, "%.1f", temperature)}°C",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
-        Spacer(modifier = Modifier.height(6.dp))
 
-        // Wind Direction Rotating Compass Needle Gauge
+        // Wind Card
         Surface(
             color = SurfaceCard.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.2.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.6f))
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, if (isDanger) AlertRed else WarningAmber.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                modifier = Modifier.padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
                         .background(Color(0xFF16202C))
-                        .border(1.dp, CyanAccent.copy(alpha = 0.4f), CircleShape),
+                        .border(1.dp, CyanAccent.copy(alpha = 0.3f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        "N",
-                        color = CyanAccent,
-                        fontSize = 7.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 1.dp)
-                    )
                     Icon(
                         imageVector = Icons.Default.Navigation,
                         contentDescription = "Wind Direction",
                         tint = WarningAmber,
                         modifier = Modifier
-                            .size(17.dp)
+                            .size(18.dp)
                             .rotate(windDirection)
                     )
                 }
-                Spacer(modifier = Modifier.width(7.dp))
+                Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "WIND: ${String.format(Locale.US, "%.1f", windSpeed)} km/h",
+                        text = "WIND SPEED",
+                        color = TextMuted,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${String.format(Locale.US, "%.1f", windSpeed)} km/h",
                         color = if (isDanger) AlertRed else WarningAmber,
-                        fontSize = 9.5.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
                         text = "DIR: ${String.format(Locale.US, "%.0f", windDirection)}° ${getCardinalDirection(windDirection)}",
                         color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 8.5.sp,
+                        fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace
                     )
                 }
@@ -3373,14 +3711,15 @@ fun FloatingLayerControls(
     onBasemapClick: () -> Unit
 ) {
     Surface(
-        color = SurfaceCard.copy(alpha = 0.92f),
-        shape = RoundedCornerShape(14.dp),
+        color = Color(0xDB0A101A), // Translucent dark tactical panel
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, SurfaceBorder),
         modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             LayerFabButton(
                 icon = Icons.Default.WaterDrop,
@@ -3389,7 +3728,6 @@ fun FloatingLayerControls(
                 activeColor = CyanAccent,
                 onClick = onToggleRadar
             )
-            Spacer(modifier = Modifier.height(8.dp))
             LayerFabButton(
                 icon = Icons.Default.Storm,
                 label = "STORM",
@@ -3397,7 +3735,6 @@ fun FloatingLayerControls(
                 activeColor = AlertRed,
                 onClick = onToggleStorm
             )
-            Spacer(modifier = Modifier.height(8.dp))
             LayerFabButton(
                 icon = Icons.Default.FlashOn,
                 label = "LIGHTNING",
@@ -3405,7 +3742,6 @@ fun FloatingLayerControls(
                 activeColor = WarningAmber,
                 onClick = onToggleLightning
             )
-            Spacer(modifier = Modifier.height(8.dp))
             LayerFabButton(
                 icon = Icons.Default.Map,
                 label = "BORDERS",
@@ -3413,7 +3749,6 @@ fun FloatingLayerControls(
                 activeColor = UnlockedGreen,
                 onClick = onToggleGeography
             )
-            Spacer(modifier = Modifier.height(8.dp))
             LayerFabButton(
                 icon = Icons.Default.Layers,
                 label = "BASEMAP",
@@ -3435,30 +3770,37 @@ fun LayerFabButton(
 ) {
     Box(
         modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (isActive) activeColor.copy(alpha = 0.2f) else Color(0xFF1E2632))
+            .width(52.dp)
+            .height(58.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isActive) activeColor.copy(alpha = 0.15f) else Color(0xFF141C26))
             .border(
                 1.dp,
                 if (isActive) activeColor else SurfaceBorder,
-                RoundedCornerShape(10.dp)
+                RoundedCornerShape(12.dp)
             )
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize().padding(2.dp)
+        ) {
             Icon(
                 icon,
                 contentDescription = label,
                 tint = if (isActive) activeColor else TextMuted,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 label,
                 color = if (isActive) activeColor else TextMuted,
-                fontSize = 7.sp,
+                fontSize = 7.5.sp,
                 fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
+                fontFamily = FontFamily.Monospace,
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -3546,12 +3888,27 @@ fun EmergencyWarningPopup(
     isVisible: Boolean,
     onDismissRequest: () -> Unit,
     userLocation: GeoPoint?,
-    langCode: String,
-    isSpeaking: Boolean,
-    onTriggerVoice: () -> Unit,
-    onStopVoice: () -> Unit
+    langCode: String
 ) {
     if (!isVisible) return
+
+    val context = LocalContext.current
+    var isPlayingSiren by remember { mutableStateOf(true) }
+
+    // Start warning tune/siren automatically when pop-up opens
+    LaunchedEffect(isVisible, isPlayingSiren) {
+        if (isVisible && isPlayingSiren) {
+            EmergencySirenController.playEmergencySiren(context)
+        } else {
+            EmergencySirenController.stopEmergencySiren()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            EmergencySirenController.stopEmergencySiren()
+        }
+    }
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val borderAlpha by infiniteTransition.animateFloat(
@@ -3605,19 +3962,22 @@ fun EmergencyWarningPopup(
     }
 
     val warningTitle = when (langCode) {
-        "or" -> "⚠️ ଅତି ଜରୁରୀ ସୂଚନା (RED ALERT)"
+        "or" -> "⚠️ ଅତି ଜରୁרୀ ସୂଚନା (RED ALERT)"
         "hi" -> "⚠️ अत्यधिक गंभीर चेतावनी (RED ALERT)"
         else -> "⚠️ SEVERE EMERGENCY ALERT (RED ALERT)"
     }
 
     val warningTextMsg = when (langCode) {
-        "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁରୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
+        "or" -> "ସତର୍କ ସୂଚନା! ପାଣିପାଗ ବିଭାଗ ପକ୍ଷରୁ ଅତି ଗୁରୁତର ବାତ୍ୟା ଓ ଝଡ଼ର ଆଶଙ୍କା ରହିଛି। ଅତି ଜରୁרୀ ନହେଲେ ଘରୁ ବାହାରକୁ ଯାଆନ୍ତୁ ନାହିଁ ଏବଂ ସୁରକ୍ଷିତ ସ୍ଥାନରେ ରୁହନ୍ତୁ।"
         "hi" -> "चेतावनी! मौसम विभाग द्वारा अत्यधिक गंभीर चक्रवात और आंधी की आशंका है। कृपया सुरक्षित स्थानों पर रहें और अनावश्यक रूप से बाहर न निकलें।"
         else -> "Emergency Warning! The meteorological department has issued an extreme severe cyclone and storm alert. Please stay indoors and remain in a safe shelter."
     }
 
     Dialog(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = {
+            isPlayingSiren = false
+            onDismissRequest()
+        },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -3684,9 +4044,9 @@ fun EmergencyWarningPopup(
                             )
                             Text(
                                 if (userLocation != null) {
-                                    "${String.format("%.3f", userLocation.latitude)}°N, ${String.format("%.3f", userLocation.longitude)}°W"
+                                     "${String.format("%.3f", userLocation.latitude)}°N, ${String.format("%.3f", userLocation.longitude)}°W"
                                 } else {
-                                    "OBTAINING CURRENT GPS..."
+                                     "OBTAINING CURRENT GPS..."
                                 },
                                 color = CyanAccent,
                                 fontSize = 8.sp,
@@ -3739,7 +4099,7 @@ fun EmergencyWarningPopup(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Dynamic Speech translated warning block
+                // Dynamic warning message block
                 Text(
                     text = warningTextMsg,
                     color = Color.White,
@@ -3753,8 +4113,19 @@ fun EmergencyWarningPopup(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Waveform indicator
-                if (isSpeaking) {
+                // Pulsing Alarm indicator (when siren is playing)
+                if (isPlayingSiren) {
+                    val pulseTransition = rememberInfiniteTransition(label = "pulse_siren")
+                    val pulseScale by pulseTransition.animateFloat(
+                        initialValue = 0.8f,
+                        targetValue = 1.2f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(600, easing = FastOutSlowInEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "siren_pulse"
+                    )
+                    
                     Row(
                         modifier = Modifier.height(40.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -3762,25 +4133,28 @@ fun EmergencyWarningPopup(
                     ) {
                         Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight1)).background(AlertRed, RoundedCornerShape(2.dp)))
                         Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight2)).background(AlertRed, RoundedCornerShape(2.dp)))
-                        Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight3)).background(AlertRed, RoundedCornerShape(2.dp)))
+                        Icon(
+                            imageVector = Icons.Default.NotificationsActive,
+                            contentDescription = "Siren Playing",
+                            tint = AlertRed,
+                            modifier = Modifier
+                                .graphicsLayer(scaleX = pulseScale, scaleY = pulseScale)
+                                .size(32.dp)
+                        )
                         Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight2)).background(AlertRed, RoundedCornerShape(2.dp)))
                         Box(modifier = Modifier.width(4.dp).height(Dp(waveHeight1)).background(AlertRed, RoundedCornerShape(2.dp)))
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                 }
 
-                // Interactive Audio broadcast speaker button
+                // Interactive Alarm / Warning Tune Toggle button
                 Button(
                     onClick = {
-                        if (isSpeaking) {
-                            onStopVoice()
-                        } else {
-                            onTriggerVoice()
-                        }
+                        isPlayingSiren = !isPlayingSiren
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isSpeaking) AlertRed else AlertRed.copy(0.2f),
-                        contentColor = if (isSpeaking) Color.White else AlertRed
+                        containerColor = if (isPlayingSiren) AlertRed else AlertRed.copy(0.2f),
+                        contentColor = if (isPlayingSiren) Color.White else AlertRed
                     ),
                     shape = RoundedCornerShape(10.dp),
                     border = BorderStroke(1.5.dp, AlertRed),
@@ -3793,22 +4167,22 @@ fun EmergencyWarningPopup(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
-                            imageVector = if (isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                            contentDescription = "Voice"
+                            imageVector = if (isPlayingSiren) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = "Warning Tune"
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isSpeaking) {
+                            text = if (isPlayingSiren) {
                                 when (langCode) {
-                                    "or" -> "ସ୍ଵର ବନ୍ଦ କରନ୍ତୁ"
-                                    "hi" -> "आवाज बंद करें"
-                                    else -> "STOP VOICE BROADCAST"
+                                    "or" -> "ଚେତାବନୀ ଟ୍ୟୁନ୍ ବନ୍ଦ କରନ୍ତୁ"
+                                    "hi" -> "चेतावनी ट्यून बंद करें"
+                                    else -> "STOP WARNING TUNE"
                                 }
                             } else {
                                 when (langCode) {
-                                    "or" -> "🔊 ଆଲର୍ଟ୍ ସ୍ଵର ଶୁଣନ୍ତୁ"
-                                    "hi" -> "🔊 अलर्ट आवाज सुनें"
-                                    else -> "🔊 LISTEN VOICE BROADCAST"
+                                    "or" -> "🔊 ଚେତାବନୀ ଟ୍ୟୁନ୍ ଶୁଣନ୍ତୁ"
+                                    "hi" -> "🔊 चेतावनी ट्यून सुनें"
+                                    else -> "🔊 PLAY WARNING TUNE"
                                 }
                             },
                             fontWeight = FontWeight.Bold,
@@ -3822,7 +4196,10 @@ fun EmergencyWarningPopup(
 
                 // Dismiss Button
                 TextButton(
-                    onClick = onDismissRequest,
+                    onClick = {
+                        isPlayingSiren = false
+                        onDismissRequest()
+                    },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
@@ -4010,8 +4387,8 @@ fun BottomControlHUD(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(if (isCurrent) 18.dp else 10.dp)
-                                    .clip(RoundedCornerShape(2.dp))
+                                    .height(if (isCurrent) 10.dp else 5.dp)
+                                    .clip(RoundedCornerShape(1.dp))
                                     .background(barColor)
                                     .clickable { onFrameSelected(idx) },
                                 contentAlignment = Alignment.Center
@@ -4021,7 +4398,7 @@ fun BottomControlHUD(
                                         imageVector = Icons.Default.Lock,
                                         contentDescription = "Locked",
                                         tint = Color.White,
-                                        modifier = Modifier.size(8.dp)
+                                        modifier = Modifier.size(6.dp)
                                     )
                                 }
                             }
@@ -4065,7 +4442,7 @@ fun TacticalBottomBannerAd(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(58.dp),
+            .height(52.dp),
         contentAlignment = Alignment.Center
     ) {
         if (adFailedToLoad || (loadedNativeAd == null && !adFailedToLoad)) {
