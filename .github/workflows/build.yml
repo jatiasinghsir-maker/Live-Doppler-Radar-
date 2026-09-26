@@ -20,26 +20,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Keystore & Create Properties
+      - name: Decode Keystore
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # Root folder re decode aebong copy kariba
-          echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
-          cat << EOF > keystore.properties
-          storePassword=$KEYSTORE_PASSWORD
-          keyPassword=$KEY_PASSWORD
-          keyAlias=$KEY_ALIAS
-          storeFile=my-upload-key.jks
-          EOF
-
-          # App folder bhitorebi same file guccha copy/create kariba
           mkdir -p app
-          cp my-upload-key.jks app/my-upload-key.jks
-          cp keystore.properties app/keystore.properties
+          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
 
       - name: Create google-services.json
         run: |
@@ -51,8 +37,16 @@ jobs:
           }' > app/google-services.json
 
       - name: Build Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          gradle assembleRelease
+          gradle assembleRelease \
+            -Pandroid.injected.signing.store.file=my-upload-key.jks \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
