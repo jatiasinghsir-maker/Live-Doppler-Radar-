@@ -24,7 +24,8 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
-          echo "$SIGNING_KEY" | base64 --decode > release-key.jks
+          mkdir -p app
+          echo "$SIGNING_KEY" | base64 --decode > app/release-key.jks
 
       - name: Create google-services.json
         run: |
