@@ -20,11 +20,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Keystore to Root
+      - name: Decode Keystore to App Folder
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
-          echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
+          mkdir -p app
+          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
 
       - name: Create google-services.json
         run: |
@@ -42,7 +43,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           gradle assembleRelease \
-            -Pandroid.injected.signing.store.file=my-upload-key.jks \
+            -Pandroid.injected.signing.store.file=app/my-upload-key.jks \
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
