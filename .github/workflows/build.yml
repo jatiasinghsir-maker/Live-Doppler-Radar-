@@ -24,8 +24,20 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p app
-          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
+          echo "$SIGNING_KEY" | base64 --decode > release-key.jks
+
+      - name: Create keystore.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cat << EOF > keystore.properties
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=release-key.jks
+          EOF
 
       - name: Create google-services.json
         run: |
@@ -37,17 +49,7 @@ jobs:
           }' > app/google-services.json
 
       - name: Build Release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cat << EOF > app/keystore.properties
-          storePassword=$KEYSTORE_PASSWORD
-          keyPassword=$KEY_PASSWORD
-          keyAlias=$KEY_ALIAS
-          storeFile=my-upload-key.jks
-          EOF
           gradle assembleRelease
 
       - name: Upload Release APK Artifact
