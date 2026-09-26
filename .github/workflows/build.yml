@@ -20,30 +20,30 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Keystore and Create Properties in App Folder
+      - name: Decode Keystore and Create Properties with Absolute Path
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          mkdir -p app
-          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
-          cat << EOF > app/keystore.properties
+          mkdir -p ${{ github.workspace }}/app
+          echo "$SIGNING_KEY" | base64 --decode > ${{ github.workspace }}/app/my-upload-key.jks
+          cat << EOF > ${{ github.workspace }}/app/keystore.properties
           storePassword=$KEYSTORE_PASSWORD
           keyPassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
-          storeFile=my-upload-key.jks
+          storeFile=${{ github.workspace }}/app/my-upload-key.jks
           EOF
 
       - name: Create google-services.json
         run: |
-          mkdir -p app
+          mkdir -p ${{ github.workspace }}/app
           echo '{
             "project_info": {"project_number": "123","project_id": "dummy"},
             "client": [{"client_info": {"mobilesdk_app_id": "1:123:android:dummy","android_client_info": {"package_name": "com.jsvision.dopplerradar"}},"oauth_client": [],"api_key": [{"current_key": "dummy"}],"services": {"appinvite_service": {"other_platform_oauth_client": []}}}],
             "configuration_version": "1"
-          }' > app/google-services.json
+          }' > ${{ github.workspace }}/app/google-services.json
 
       - name: Build Release APK
         run: |
