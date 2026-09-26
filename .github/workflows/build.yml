@@ -20,15 +20,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Keystore and Create Properties in Root
+      - name: Decode Keystore and Create Properties in App Folder
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
-          cat << EOF > keystore.properties
+          mkdir -p app
+          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
+          cat << EOF > app/keystore.properties
           storePassword=$KEYSTORE_PASSWORD
           keyPassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
