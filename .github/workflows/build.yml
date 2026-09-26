@@ -27,6 +27,19 @@ jobs:
           mkdir -p app
           echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
 
+      - name: Create keystore.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cat << EOF > app/keystore.properties
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=my-upload-key.jks
+          EOF
+
       - name: Create google-services.json
         run: |
           mkdir -p app
@@ -37,16 +50,8 @@ jobs:
           }' > app/google-services.json
 
       - name: Build Release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          gradle assembleRelease \
-            -Pandroid.injected.signing.store.file=my-upload-key.jks \
-            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          gradle assembleRelease
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
