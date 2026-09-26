@@ -27,6 +27,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          # Root folder re decode aebong copy kariba
           echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
           cat << EOF > keystore.properties
           storePassword=$KEYSTORE_PASSWORD
@@ -34,6 +35,11 @@ jobs:
           keyAlias=$KEY_ALIAS
           storeFile=my-upload-key.jks
           EOF
+
+          # App folder bhitorebi same file guccha copy/create kariba
+          mkdir -p app
+          cp my-upload-key.jks app/my-upload-key.jks
+          cp keystore.properties app/keystore.properties
 
       - name: Create google-services.json
         run: |
