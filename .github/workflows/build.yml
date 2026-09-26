@@ -43,7 +43,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           gradle assembleRelease \
-            -Pandroid.injected.signing.store.file=app/my-upload-key.jks \
+            -Pandroid.injected.signing.store.file=my-upload-key.jks \
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
