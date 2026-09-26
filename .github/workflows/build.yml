@@ -20,12 +20,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Decode Keystore to Gradle Path
+      - name: Decode Keystore to Root
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p /home/runner/.gradle/daemons/9.7.1/
-          echo "$SIGNING_KEY" | base64 --decode > /home/runner/.gradle/daemons/9.7.1/my-upload-key.jks
+          echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
 
       - name: Create google-services.json
         run: |
