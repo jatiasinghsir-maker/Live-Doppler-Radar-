@@ -27,9 +27,8 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          mkdir -p app
-          echo "$SIGNING_KEY" | base64 --decode > app/my-upload-key.jks
-          cat << EOF > app/keystore.properties
+          echo "$SIGNING_KEY" | base64 --decode > my-upload-key.jks
+          cat << EOF > keystore.properties
           storePassword=$KEYSTORE_PASSWORD
           keyPassword=$KEY_PASSWORD
           keyAlias=$KEY_ALIAS
