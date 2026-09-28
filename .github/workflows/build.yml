@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -25,16 +26,75 @@ jobs:
           SIGNING_KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
           mkdir -p app
-          echo "$SIGNING_KEY" | base64 --decode > ${{ github.workspace }}/app/my-upload-key.jks
+          echo "$SIGNING_KEY" | base64 --decode > "${{ github.workspace }}/app/my-upload-key.jks"
 
       - name: Create google-services.json
         run: |
           mkdir -p app
           echo '{
-            "project_info": {"project_number": "123","project_id": "dummy"},
-            "client": [{"client_info": {"mobilesdk_app_id": "1:123:android:dummy","android_client_info": {"package_name": "com.jsvision.dopplerradar"}},"oauth_client": [],"api_key": [{"current_key": "dummy"}],"services": {"appinvite_service": {"other_platform_oauth_client": []}}}],
-            "configuration_version": "1"
+            "project_info": {
+              "project_number": "123",
+              "project_id": "dummy"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:123:android:dummy",
+                "android_client_info": {
+                  "package_name": "com.aistudio.quantbot"
+                }
+              },
+              "configuration_version": "1"
+            }]
           }' > app/google-services.json
+
+      - name: Verify signing keystore
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "======================================"
+          echo "VERIFYING ANDROID SIGNING KEYSTORE"
+          echo "======================================"
+
+          if [ ! -f "${{ github.workspace }}/app/my-upload-key.jks" ]; then
+            echo "ERROR: Keystore file was not created."
+            exit 1
+          fi
+
+          echo "Keystore file exists."
+
+          echo "Checking keystore and alias..."
+
+          keytool -list \
+            -keystore "${{ github.workspace }}/app/my-upload-key.jks" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS"
+
+          echo "Keystore password: OK"
+          echo "Alias: OK"
+
+          echo "Checking private-key password..."
+
+          rm -f /tmp/verify-signing.jks
+
+          keytool -importkeystore \
+            -srckeystore "${{ github.workspace }}/app/my-upload-key.jks" \
+            -srcstoretype JKS \
+            -srcalias "$KEY_ALIAS" \
+            -srcstorepass "$KEYSTORE_PASSWORD" \
+            -srckeypass "$KEY_PASSWORD" \
+            -destkeystore /tmp/verify-signing.jks \
+            -deststoretype PKCS12 \
+            -deststorepass "Verify12345" \
+            -destkeypass "Verify12345" \
+            -noprompt
+
+          echo "Private-key password: OK"
+
+          echo "======================================"
+          echo "SIGNING KEYSTORE VERIFICATION PASSED"
+          echo "======================================"
 
       - name: Build Release APK
         env:
@@ -42,11 +102,28 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          gradle assembleRelease \
-            -Pandroid.injected.signing.store.file=${{ github.workspace }}/app/my-upload-key.jks \
+          chmod +x ./gradlew
+
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="${{ github.workspace }}/app/my-upload-key.jks" \
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+
+      - name: Verify Release APK
+        run: |
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: Release APK was not generated."
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "RELEASE APK CREATED SUCCESSFULLY"
+          echo "======================================"
+
+          ls -lh "$APK_PATH"
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
