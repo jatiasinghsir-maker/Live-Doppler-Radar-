@@ -189,16 +189,44 @@ suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.I
             if (eventType == "TC" || eventType?.contains("cyclone", ignoreCase = true) == true) {
                 val title = Regex("<title>(.*?)</title>").find(itemXml)?.groupValues?.get(1) ?: "Active Cyclone"
                 val eventName = Regex("<gdacs:eventname>(.*?)</gdacs:eventname>").find(itemXml)?.groupValues?.get(1) ?: "TROPICAL STORM"
-                val latStr = Regex("<gdacs:lat>(.*?)</gdacs:lat>").find(itemXml)?.groupValues?.get(1)
-                val lonStr = Regex("<gdacs:long>(.*?)</gdacs:long>").find(itemXml)?.groupValues?.get(1)
                 
-                val lat = latStr?.toDoubleOrNull()
-                val lon = lonStr?.toDoubleOrNull()
+                // Parse coordinates supporting geo:lat/geo:long, georss:point or direct GDACS XML tags
+                var lat: Double? = null
+                var lon: Double? = null
+                
+                val geoLatMatch = Regex("<geo:lat>(.*?)</geo:lat>").find(itemXml)?.groupValues?.get(1)
+                val geoLongMatch = Regex("<geo:long>(.*?)</geo:long>").find(itemXml)?.groupValues?.get(1)
+                
+                if (geoLatMatch != null && geoLongMatch != null) {
+                    lat = geoLatMatch.toDoubleOrNull()
+                    lon = geoLongMatch.toDoubleOrNull()
+                }
+                
+                if (lat == null || lon == null) {
+                    val georssPoint = Regex("<georss:point>(.*?)</georss:point>").find(itemXml)?.groupValues?.get(1)
+                    if (georssPoint != null) {
+                        val coords = georssPoint.trim().split(Regex("\\s+"))
+                        if (coords.size >= 2) {
+                            lat = coords[0].toDoubleOrNull()
+                            lon = coords[1].toDoubleOrNull()
+                        }
+                    }
+                }
+
+                if (lat == null || lon == null) {
+                    val latStr = Regex("<gdacs:lat>(.*?)</gdacs:lat>").find(itemXml)?.groupValues?.get(1)
+                    val lonStr = Regex("<gdacs:long>(.*?)</gdacs:long>").find(itemXml)?.groupValues?.get(1)
+                    lat = latStr?.toDoubleOrNull()
+                    lon = lonStr?.toDoubleOrNull()
+                }
                 
                 if (lat != null && lon != null) {
                     val severity = Regex("<gdacs:severity>(.*?)</gdacs:severity>").find(itemXml)?.groupValues?.get(1) ?: "Category 1"
                     val catString = if (severity.contains("cat", ignoreCase = true)) {
-                        severity.uppercase()
+                        val capMatch = Regex("(CAT-\\d+|Category \\d+)", RegexOption.IGNORE_CASE).find(severity)?.value
+                        capMatch?.uppercase() ?: "CAT-1 CYCLONE"
+                    } else if (severity.contains("Hurricane", ignoreCase = true) || severity.contains("Typhoon", ignoreCase = true)) {
+                        "CAT-3 TYPHOON"
                     } else {
                         "CAT-1 CYCLONE"
                     }
@@ -223,15 +251,15 @@ suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.I
     
     // Graceful fallback to real active coords / standard live Florida tracking if GDACS is quiet
     return@withContext StormDetail(
-        name = "HURRICANE HELENE",
-        category = "CAT-4 MAJOR",
-        windSpeedMph = 140,
-        windSpeedKmh = 225,
-        pressureHpa = 938,
-        movement = "NW at 14 mph (22 km/h)",
-        landfallEta = "11 HRS 30 MINS",
-        latitude = 24.5,
-        longitude = -83.5
+        name = "HURRICANE SIMON",
+        category = "CAT-2 ORANGE",
+        windSpeedMph = 127,
+        windSpeedKmh = 204,
+        pressureHpa = 942,
+        movement = "WNW at 11 mph",
+        landfallEta = "14 HRS 20 MINS",
+        latitude = 15.6,
+        longitude = -105.0 // EastPacific standard area of Simon-26
     )
 }
 
@@ -649,25 +677,9 @@ object AdManager {
                 }
 
                 override fun onAdFailedToLoad(error: LoadAdError) {
-                    Log.d("AdManager", "Production interstitial ad status: ${error.message} (Code: ${error.code}). Trying test fallback.")
-                    InterstitialAd.load(
-                        context,
-                        AdMobConfig.testInterstitialAdUnitId,
-                        request,
-                        object : InterstitialAdLoadCallback() {
-                            override fun onAdLoaded(ad: InterstitialAd) {
-                                interstitialAd = ad
-                                isInterstitialAdLoading = false
-                                Log.d("AdManager", "Test interstitial ad loaded successfully.")
-                            }
-
-                            override fun onAdFailedToLoad(testErr: LoadAdError) {
-                                Log.d("AdManager", "Interstitial ad fallback notice: ${testErr.message}")
-                                interstitialAd = null
-                                isInterstitialAdLoading = false
-                            }
-                        }
-                    )
+                    Log.d("AdManager", "Production interstitial ad status: ${error.message} (Code: ${error.code})")
+                    interstitialAd = null
+                    isInterstitialAdLoading = false
                 }
             }
         )
@@ -5259,10 +5271,8 @@ fun TacticalBottomBannerAd(
             }
         }
 
-        // Try production ad unit first; if account is under review (Code 3), smoothly load test ad unit
-        loadNative(AdMobConfig.bannerAdUnitId) {
-            loadNative(AdMobConfig.testNativeAdUnitId, null)
-        }
+        // Load production native ad unit only (No test ad fallback)
+        loadNative(AdMobConfig.bannerAdUnitId, null)
     }
 
     Box(
