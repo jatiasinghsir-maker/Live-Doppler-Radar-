@@ -544,7 +544,7 @@ object AdMobConfig {
     // Production unit IDs (Active automatically once Google approves account)
     const val rewardedAdUnitId = "ca-app-pub-9598215288389011/9022692432"
     const val interstitialAdUnitId = "ca-app-pub-9598215288389011/1363694265"
-    const val bannerAdUnitId = "ca-app-pub-9598215288389011/7242706901"
+    const val bannerAdUnitId = "ca-app-pub-9598215288389011/3034451275"
 
     // Official Google Sample/Test Ad Unit IDs (Guaranteed to return ads immediately)
     const val testInterstitialAdUnitId = "ca-app-pub-3940256099942544/1033173712"
@@ -558,16 +558,9 @@ object AdManager {
     private var isRewardedAdLoading: Boolean = false
     private var isInterstitialAdLoading: Boolean = false
 
-    // Direct Ad Network Launcher
+    // Direct Ad Network Launcher (Disabled to prevent unwanted browser redirects)
     fun openDirectAdLink(context: Context) {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AdMobConfig.directAdLink)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-        } catch (e: Exception) {
-            Log.d("AdManager", "Failed to open direct ad link: ${e.message}")
-        }
+        // Disabled to prevent unwanted browser redirections
     }
 
     // 1. Muat Rewarded Ad
@@ -601,7 +594,7 @@ object AdManager {
         )
     }
 
-    // Némbongkeun Rewarded Ad (With direct ad network integration & reward fulfillment)
+    // Némbongkeun Rewarded Ad (With clean fallbacks instead of direct ad redirects)
     fun showRewardedAd(
         activity: Activity,
         onRewardSuccess: () -> Unit,
@@ -617,10 +610,9 @@ object AdManager {
                 }
 
                 override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                    Log.d("AdManager", "Rewarded ad failed to show: $error. Opening direct ad link.")
+                    Log.d("AdManager", "Rewarded ad failed to show: $error.")
                     rewardedAd = null
-                    openDirectAdLink(activity)
-                    onRewardSuccess()
+                    onAdFailed?.invoke()
                 }
 
                 override fun onAdShowedFullScreenContent() {
@@ -633,9 +625,8 @@ object AdManager {
                 onRewardSuccess()
             }
         } else {
-            // Direct CPM network ad link triggered and reward granted with 60s cooldown
-            openDirectAdLink(activity)
-            onRewardSuccess()
+            // Trigger failed callback to engage high-fidelity simulation immediately
+            onAdFailed?.invoke()
             loadRewardedAd(activity)
         }
     }
@@ -707,9 +698,8 @@ object AdManager {
                 }
 
                 override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                    Log.d("AdManager", "Interstitial ad failed to show: $error. Opening direct ad link.")
+                    Log.d("AdManager", "Interstitial ad failed to show: $error.")
                     interstitialAd = null
-                    openDirectAdLink(activity)
                     loadInterstitialAd(activity)
                     onAdClosed?.invoke()
                 }
@@ -720,8 +710,7 @@ object AdManager {
             }
             currentAd.show(activity)
         } else {
-            // Direct CPM network ad link triggered with exact 60-second cooldown rule
-            openDirectAdLink(activity)
+            // Clean fallback: complete execution silently instead of unwanted redirection
             loadInterstitialAd(activity)
             onAdClosed?.invoke()
         }
@@ -1326,8 +1315,8 @@ fun MainTacticalScreen(
     }
 
     fun startCooldownTimer() {
-        cooldownSeconds = 60
-        object : CountDownTimer(60000, 1000) {
+        cooldownSeconds = 120
+        object : CountDownTimer(120000, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 cooldownSeconds = (millisUntilFinished / 1000).toInt()
             }
@@ -1409,6 +1398,17 @@ fun MainTacticalScreen(
 
     LaunchedEffect(Unit) {
         fetchRadarData()
+        // Periodically refresh the dynamic cyclone coordinates from GDACS every 60 seconds
+        // to prevent storm tracking from getting frozen or held up on older fallbacks.
+        while (true) {
+            delay(60_000L)
+            try {
+                val freshStorm = fetchActiveStormFromGDACS()
+                stormDetail = freshStorm
+            } catch (e: Exception) {
+                Log.e("StormDetailUpdate", "Periodic refresh warning: ${e.message}")
+            }
+        }
     }
 
     LaunchedEffect(isPlaying, rainData, unlockedMaxIndex) {
@@ -1468,7 +1468,16 @@ fun MainTacticalScreen(
                                 border = BorderStroke(0.8.dp, if (isSelected) CyanAccent else Color.Transparent),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .clickable { activeTab = tabIdx }
+                                    .clickable {
+                                        val activity = context as? Activity
+                                        if (activity != null) {
+                                            showInterstitialAd(activity) {
+                                                activeTab = tabIdx
+                                            }
+                                        } else {
+                                            activeTab = tabIdx
+                                        }
+                                    }
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Row(
@@ -5142,9 +5151,6 @@ fun AlternatingCpmBanner(
         modifier = modifier
             .fillMaxWidth()
             .height(34.dp)
-            .clickable {
-                AdManager.openDirectAdLink(context)
-            }
     ) {
         Row(
             modifier = Modifier
@@ -5476,6 +5482,23 @@ fun TelemetryDashboardTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Native Advanced Ad integrated directly at the top of the Telemetry tab
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    TacticalBottomBannerAd(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                    )
+                }
+            }
+        }
+
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceCard),
@@ -5783,6 +5806,23 @@ fun SurvivalManualTab() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Native Advanced Ad integrated directly at the top of the Survival checklist tab
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                border = BorderStroke(1.dp, SurfaceBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    TacticalBottomBannerAd(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                    )
+                }
+            }
+        }
+
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = SurfaceCard),
