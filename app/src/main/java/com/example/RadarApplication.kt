@@ -15,6 +15,9 @@ class RadarApplication : Application() {
             Os.setenv("LIBGL_DRI3_DISABLE", "1", true)
             Os.setenv("MESA_LOADER_DRIVER_OVERRIDE", "swrast", true)
             Os.setenv("MESA_NO_ERROR", "1", true)
+            Os.setenv("MESA_DEBUG", "silent", true)
+            Os.setenv("EGL_LOG_LEVEL", "fatal", true)
+            Os.setenv("MESA_LOG_FILE", "/dev/null", true)
         } catch (e: Throwable) {
             // Ignore environment setting issues
         }

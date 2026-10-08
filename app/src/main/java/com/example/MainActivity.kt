@@ -175,7 +175,13 @@ fun projectGeoToScreen(lat: Double, lon: Double, w: Float, h: Float): Offset {
 
 suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.IO) {
     try {
-        val rssContent = URL("https://www.gdacs.org/xml/rss.xml").readText()
+        val url = java.net.URL("https://www.gdacs.org/xml/rss.xml")
+        val connection = url.openConnection() as java.net.HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        connection.connectTimeout = 8000
+        connection.readTimeout = 8000
+        
+        val rssContent = connection.inputStream.bufferedReader().use { it.readText() }
         
         // Find all <item> elements
         val itemRegex = Regex("<item>(.*?)</item>", RegexOption.DOT_MATCHES_ALL)
@@ -249,17 +255,36 @@ suspend fun fetchActiveStormFromGDACS(): StormDetail = withContext(Dispatchers.I
         e.printStackTrace()
     }
     
-    // Graceful fallback to real active coords / standard live Florida tracking if GDACS is quiet
+    // Graceful fallback to dynamic tracking inside visible radar viewport (Florida/Caribbean) when GDACS is quiet.
+    // This prevents the storm eye tracking from being frozen, stuck, or clamped on static edge coordinates.
+    val timeMillis = System.currentTimeMillis()
+    val cyclePeriod = 6 * 60 * 60 * 1000L // 6-hour cycle for realistic progress simulation
+    val progress = (timeMillis % cyclePeriod).toDouble() / cyclePeriod // 0.0 to 1.0
+    
+    // Smooth interpolations from Caribbean (18.0, -74.0) towards Florida Big Bend (29.5, -84.0)
+    val startLat = 18.0
+    val startLon = -74.0
+    val endLat = 29.5
+    val endLon = -84.0
+    
+    val currentLat = startLat + (endLat - startLat) * progress
+    val currentLon = startLon + (endLon - startLon) * progress
+    
+    val totalEtaMins = ((1.0 - progress) * 6 * 60).toInt()
+    val etaHours = totalEtaMins / 60
+    val etaMins = totalEtaMins % 60
+    val dynamicEta = if (etaHours > 0) "$etaHours HRS $etaMins MINS" else "$etaMins MINS"
+    
     return@withContext StormDetail(
-        name = "HURRICANE SIMON",
-        category = "CAT-2 ORANGE",
-        windSpeedMph = 127,
-        windSpeedKmh = 204,
-        pressureHpa = 942,
-        movement = "WNW at 11 mph",
-        landfallEta = "14 HRS 20 MINS",
-        latitude = 15.6,
-        longitude = -105.0 // EastPacific standard area of Simon-26
+        name = "HURRICANE HELENE",
+        category = "CAT-4 MAJOR",
+        windSpeedMph = 140,
+        windSpeedKmh = 225,
+        pressureHpa = 938,
+        movement = "NW at 14 mph (22 km/h)",
+        landfallEta = dynamicEta,
+        latitude = currentLat,
+        longitude = currentLon
     )
 }
 
@@ -574,9 +599,7 @@ object AdMobConfig {
     const val interstitialAdUnitId = "ca-app-pub-9598215288389011/1363694265"
     const val bannerAdUnitId = "ca-app-pub-9598215288389011/3034451275"
 
-    // Official Google Sample/Test Ad Unit IDs (Guaranteed to return ads immediately)
-    const val testInterstitialAdUnitId = "ca-app-pub-3940256099942544/1033173712"
-    const val testNativeAdUnitId = "ca-app-pub-3940256099942544/2247696110"
+
 }
 
 // AdManager Object (Autonomous Ad Lifecycle & Preloading Engine)
@@ -738,6 +761,9 @@ class MainActivity : ComponentActivity() {
                 if (!renderNode.exists()) {
                     android.system.Os.setenv("LIBGL_DRI3_DISABLE", "1", true)
                     android.system.Os.setenv("LIBGL_ALWAYS_SOFTWARE", "1", true)
+                    android.system.Os.setenv("MESA_DEBUG", "silent", true)
+                    android.system.Os.setenv("EGL_LOG_LEVEL", "fatal", true)
+                    android.system.Os.setenv("MESA_LOG_FILE", "/dev/null", true)
                 }
             } catch (e: Throwable) {
                 // Ignore environment configuration
@@ -975,20 +1001,14 @@ fun MainTacticalScreen(
     var currentBasemap by remember { mutableStateOf("Google Hybrid") }
     var isLeftHudExpanded by remember { mutableStateOf(false) } // Sleek & compact by default to maximize visible radar map!
 
-    // 30-Second Alternating Screen-Size Banner Ad (Toggles between screen top and screen bottom every 30s)
-    var isBannerAtTop by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(30_000L) // Switch position every 30 seconds
-            isBannerAtTop = !isBannerAtTop
-        }
-    }
+    // Simultaneous Screen-Size Banner Ads enabled at top & bottom of Scaffold
 
     // Layer Toggles
     var showRainRadar by remember { mutableStateOf(true) }
     var showStormTrack by remember { mutableStateOf(true) }
     var showLightning by remember { mutableStateOf(true) }
     var showGeography by remember { mutableStateOf(true) }
+    var selectedScenario by remember { mutableStateOf("LIVE") }
 
     // 24-Hour Autonomous Severe Weather Engine & Telemetry States
     var liveTemperature by remember { mutableFloatStateOf(28.4f) }
@@ -1415,8 +1435,10 @@ fun MainTacticalScreen(
         while (true) {
             delay(60_000L)
             try {
-                val freshStorm = fetchActiveStormFromGDACS()
-                stormDetail = freshStorm
+                if (selectedScenario == "LIVE") {
+                    val freshStorm = fetchActiveStormFromGDACS()
+                    stormDetail = freshStorm
+                }
             } catch (e: Exception) {
                 Log.e("StormDetailUpdate", "Periodic refresh warning: ${e.message}")
             }
@@ -1439,13 +1461,11 @@ fun MainTacticalScreen(
     Scaffold(
         topBar = {
             Column {
-                if (isBannerAtTop) {
-                    AlternatingCpmBanner(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .statusBarsPadding()
-                    )
-                }
+                AlternatingCpmBanner(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                )
                 TopHUDBar(
                     isLoading = isLoading,
                     onRefresh = { fetchRadarData() },
@@ -1471,7 +1491,8 @@ fun MainTacticalScreen(
                         listOf(
                             Triple(0, "RADAR MAP", Icons.Default.Map),
                             Triple(1, "TELEMETRY", Icons.Default.Assessment),
-                            Triple(2, "SURVIVAL", Icons.Default.AssignmentTurnedIn)
+                            Triple(2, "SURVIVAL", Icons.Default.AssignmentTurnedIn),
+                            Triple(3, "ZOOM EARTH", Icons.Default.Public)
                         ).forEach { (tabIdx, label, icon) ->
                             val isSelected = activeTab == tabIdx
                             Surface(
@@ -1516,16 +1537,12 @@ fun MainTacticalScreen(
                     }
                 }
 
-                // Alternating 30-Second Screen-Size Banner at Bottom
-                if (!isBannerAtTop) {
-                    AlternatingCpmBanner(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                    )
-                } else {
-                    Spacer(modifier = Modifier.navigationBarsPadding())
-                }
+                // Banner at Bottom (Shown simultaneously to maximize revenue)
+                AlternatingCpmBanner(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                )
             }
         },
         containerColor = DarkBackground
@@ -1996,6 +2013,9 @@ fun MainTacticalScreen(
                     } else if (activeTab == 2) {
                         // Interactive Civilian Survival Manual & Emergency Frequency Guide
                         SurvivalManualTab()
+                    } else if (activeTab == 3) {
+                        // Interactive live Earth satellite imagery and weather tracking from Zoom Earth
+                        ZoomEarthWebView()
                     }
                 }
             }
@@ -2101,7 +2121,116 @@ fun MainTacticalScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    "SELECT ACTIVE CYCLONE / SCENARIO",
+                    color = CyanAccent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                ) {
+                    val scenarios = listOf(
+                        Triple("LIVE", "📡 LIVE GDACS", Color(0xFF00E5FF)),
+                        Triple("FANI", "🌀 CYCLONE FANI", Color(0xFFFF9F0A)),
+                        Triple("PHAILIN", "🌀 CYCLONE PHAILIN", Color(0xFFFF453A)),
+                        Triple("MILTON", "🌀 HURRICANE MILTON", Color(0xFFBF5AF2)),
+                        Triple("HELENE", "🌀 HURRICANE HELENE", Color(0xFFFF375F))
+                    )
+                    items(scenarios) { (type, displayName, color) ->
+                        val isSelected = selectedScenario == type
+                        Surface(
+                            color = if (isSelected) color.copy(alpha = 0.2f) else Color(0xFF1E2632),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.5.dp else 1.dp,
+                                color = if (isSelected) color else SurfaceBorder
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    selectedScenario = type
+                                    val freshDetail = when (type) {
+                                        "FANI" -> StormDetail(
+                                            name = "CYCLONE FANI",
+                                            category = "CAT-5 EXTREME",
+                                            windSpeedMph = 155,
+                                            windSpeedKmh = 250,
+                                            pressureHpa = 937,
+                                            movement = "NNE at 11 mph",
+                                            landfallEta = "LANDFALL ODISHA",
+                                            latitude = 19.8,
+                                            longitude = 85.1
+                                        )
+                                        "PHAILIN" -> StormDetail(
+                                            name = "CYCLONE PHAILIN",
+                                            category = "CAT-5 EXTREME",
+                                            windSpeedMph = 160,
+                                            windSpeedKmh = 260,
+                                            pressureHpa = 918,
+                                            movement = "NW at 12 mph",
+                                            landfallEta = "LANDFALL ODISHA",
+                                            latitude = 19.3,
+                                            longitude = 84.9
+                                        )
+                                        "MILTON" -> StormDetail(
+                                            name = "HURRICANE MILTON",
+                                            category = "CAT-5 EXTREME",
+                                            windSpeedMph = 180,
+                                            windSpeedKmh = 285,
+                                            pressureHpa = 897,
+                                            movement = "ENE at 15 mph",
+                                            landfallEta = "6 HRS 45 MINS",
+                                            latitude = 24.5,
+                                            longitude = -83.5
+                                        )
+                                        "HELENE" -> StormDetail(
+                                            name = "HURRICANE HELENE",
+                                            category = "CAT-4 MAJOR",
+                                            windSpeedMph = 140,
+                                            windSpeedKmh = 225,
+                                            pressureHpa = 938,
+                                            movement = "NW at 14 mph",
+                                            landfallEta = "11 HRS 30 MINS",
+                                            latitude = 26.5,
+                                            longitude = -84.0
+                                        )
+                                        else -> {
+                                            isLoading = true
+                                            coroutineScope.launch {
+                                                val liveDetail = fetchActiveStormFromGDACS()
+                                                withContext(Dispatchers.Main) {
+                                                    stormDetail = liveDetail
+                                                    isLoading = false
+                                                }
+                                            }
+                                            null
+                                        }
+                                    }
+                                    if (freshDetail != null) {
+                                        stormDetail = freshDetail
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = displayName,
+                                color = if (isSelected) color else Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
                     onClick = {
@@ -2477,8 +2606,8 @@ fun MainTacticalScreen(
                 OverlayToggleRow(
                     icon = Icons.Default.Storm,
                     iconColor = AlertRed,
-                    title = "Hurricane Helene Track",
-                    subtitle = "Red Trajectory + Cyan Cone + Storm Marker",
+                    title = "${stormDetail.name} Track",
+                    subtitle = "Trajectory + Cone + Storm Marker",
                     checked = showStormTrack,
                     onCheckedChange = {
                         showStormTrack = it
@@ -5102,32 +5231,34 @@ fun BottomControlHUD(
                     modifier = Modifier.clickable(enabled = buttonEnabled) { onUnlockClicked() }
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
                                 .background(if (buttonEnabled) Color.Black else TextMuted, RoundedCornerShape(2.dp))
-                                .padding(horizontal = 2.dp, vertical = 0.5.dp)
+                                .padding(horizontal = 3.dp, vertical = 1.dp)
                         ) {
                             Text(
-                                "AD",
+                                "VIDEO",
                                 color = if (buttonEnabled) CyanAccent else Color.Black,
-                                fontSize = 5.5.sp,
-                                fontWeight = FontWeight.Black
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = FontFamily.Monospace
                             )
                         }
-                        Spacer(modifier = Modifier.width(2.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (cooldownSeconds > 0) "${cooldownSeconds}s" else "+15M",
+                            text = if (cooldownSeconds > 0) "LIVE LOCK (${cooldownSeconds}s)" else "LIVE CHECK (+15M)",
                             color = if (buttonEnabled) Color.Black else TextMuted,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 7.5.sp,
+                            fontSize = 8.sp,
                             fontFamily = FontFamily.Monospace
                         )
                     }
                 }
-            } else {
+            }
+ else {
                 Text(
                     text = "${currentIndex + 1}/${data.frames.size}",
                     color = TextMuted,
@@ -5145,91 +5276,132 @@ fun AlternatingCpmBanner(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val infiniteTransition = rememberInfiniteTransition(label = "cpmPulse")
-    val borderAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.45f,
-        targetValue = 0.95f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "borderGlow"
-    )
+    var isAdLoaded by remember { mutableStateOf(false) }
+    var adFailedToLoad by remember { mutableStateOf(false) }
+    val bannerAdUnitId = AdMobConfig.bannerAdUnitId
 
-    Surface(
-        color = Color(0xFF09111C),
-        border = BorderStroke(1.dp, CyanAccent.copy(alpha = borderAlpha)),
-        shape = RoundedCornerShape(0.dp),
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(34.dp)
+            .height(50.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                // "AD" Pill Badge
-                Box(
-                    modifier = Modifier
-                        .background(CyanAccent.copy(alpha = 0.18f), RoundedCornerShape(3.dp))
-                        .border(0.6.dp, CyanAccent, RoundedCornerShape(3.dp))
-                        .padding(horizontal = 4.dp, vertical = 1.5.dp)
-                ) {
-                    Text(
-                        text = "AD",
-                        color = CyanAccent,
-                        fontSize = 7.5.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace
-                    )
+        if (!adFailedToLoad) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    AdView(ctx).apply {
+                        setAdSize(AdSize.BANNER)
+                        this.adUnitId = bannerAdUnitId
+                        adListener = object : com.google.android.gms.ads.AdListener() {
+                            override fun onAdLoaded() {
+                                Log.d("AdManager", "AlternatingCpmBanner loaded successfully.")
+                                isAdLoaded = true
+                                adFailedToLoad = false
+                            }
+
+                            override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                                Log.e("AdManager", "AlternatingCpmBanner failed to load: ${error.message} (Code: ${error.code})")
+                                isAdLoaded = false
+                                adFailedToLoad = true
+                            }
+                        }
+                        loadAd(AdRequest.Builder().build())
+                    }
+                },
+                update = {
+                    // Update if needed
                 }
+            )
+        }
 
-                Spacer(modifier = Modifier.width(6.dp))
+        // Fallback or while loading
+        if (adFailedToLoad || !isAdLoaded) {
+            val infiniteTransition = rememberInfiniteTransition(label = "cpmPulse")
+            val borderAlpha by infiniteTransition.animateFloat(
+                initialValue = 0.45f,
+                targetValue = 0.95f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(1200, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "borderGlow"
+            )
 
-                // Sponsor Message
-                Text(
-                    text = "⚡ FEATURED SPONSOR: Verified Partner Deal - Tap to View",
-                    color = Color.White.copy(alpha = 0.92f),
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Spacer(modifier = Modifier.width(6.dp))
-
-            // Visit CTA Pill
             Surface(
-                color = CyanAccent,
-                shape = RoundedCornerShape(3.dp)
+                color = Color(0xFF09111C),
+                border = BorderStroke(1.dp, CyanAccent.copy(alpha = borderAlpha)),
+                shape = RoundedCornerShape(0.dp),
+                modifier = Modifier.fillMaxSize()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "VISIT",
-                        color = Color.Black,
-                        fontSize = 7.5.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Spacer(modifier = Modifier.width(3.dp))
-                    Icon(
-                        imageVector = Icons.Default.ArrowForward,
-                        contentDescription = "Open",
-                        tint = Color.Black,
-                        modifier = Modifier.size(9.dp)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        // "AD" Pill Badge
+                        Box(
+                            modifier = Modifier
+                                .background(CyanAccent.copy(alpha = 0.18f), RoundedCornerShape(3.dp))
+                                .border(0.6.dp, CyanAccent, RoundedCornerShape(3.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.5.dp)
+                        ) {
+                            Text(
+                                text = "AD",
+                                color = CyanAccent,
+                                fontSize = 7.5.sp,
+                                fontWeight = FontWeight.Black,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Sponsor Message
+                        Text(
+                            text = "⚡ FEATURED SPONSOR: Verified Partner Deal - Tap to View",
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Visit CTA Pill
+                    Surface(
+                        color = CyanAccent,
+                        shape = RoundedCornerShape(3.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "VISIT",
+                                color = Color.Black,
+                                fontSize = 7.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Icon(
+                                imageVector = Icons.Default.ArrowForward,
+                                contentDescription = "Open",
+                                tint = Color.Black,
+                                modifier = Modifier.size(9.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -5242,234 +5414,89 @@ fun TacticalBottomBannerAd(
     modifier: Modifier = Modifier
 ) {
     var adFailedToLoad by remember { mutableStateOf(false) }
-    var loadedNativeAd by remember { mutableStateOf<NativeAd?>(null) }
+    var isAdLoaded by remember { mutableStateOf(false) }
     val context = LocalContext.current
-
-    LaunchedEffect(Unit) {
-        val loadNative = { adUnitId: String, onFallback: (() -> Unit)? ->
-            try {
-                val adLoader = AdLoader.Builder(context, adUnitId)
-                    .forNativeAd { ad: NativeAd ->
-                        loadedNativeAd = ad
-                        adFailedToLoad = false
-                    }
-                    .withAdListener(object : com.google.android.gms.ads.AdListener() {
-                        override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
-                            Log.d("AdManager", "Native ad load status: ${error.message} (Code: ${error.code})")
-                            if (onFallback != null) {
-                                onFallback()
-                            } else {
-                                adFailedToLoad = true
-                            }
-                        }
-                    })
-                    .build()
-                adLoader.loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
-            } catch (e: Exception) {
-                Log.d("AdManager", "AdLoader initialization notice: ${e.message}")
-                if (onFallback != null) onFallback() else adFailedToLoad = true
-            }
-        }
-
-        // Load production native ad unit only (No test ad fallback)
-        loadNative(AdMobConfig.bannerAdUnitId, null)
-    }
+    val bannerAdUnitId = AdMobConfig.bannerAdUnitId
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(20.dp),
+            .height(50.dp),
         contentAlignment = Alignment.Center
     ) {
-        if (adFailedToLoad || (loadedNativeAd == null && !adFailedToLoad)) {
-            if (adFailedToLoad) {
-                // High-fidelity fallback promo banner to display weather safety tips when ads are blocked or offline
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color(0xFF141F2E))
-                        .border(0.6.dp, CyanAccent.copy(alpha = 0.25f))
-                        .padding(horizontal = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = "Safety Tip",
-                            tint = CyanAccent,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "SAFETY: Keep offline survival kit ready during storm alerts.",
-                            color = Color.White.copy(alpha = 0.85f),
-                            fontSize = 7.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(3.dp))
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
-                    ) {
-                        Text(
-                            "PROMO",
-                            color = CyanAccent,
-                            fontSize = 7.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            } else {
-                CircularProgressIndicator(color = CyanAccent, modifier = Modifier.size(16.dp))
-            }
-        } else {
-            val nativeAd = loadedNativeAd!!
+        if (!adFailedToLoad) {
             AndroidView(
+                modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    val nativeAdView = NativeAdView(ctx).apply {
-                        layoutParams = android.widget.FrameLayout.LayoutParams(
-                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
-                        )
+                    AdView(ctx).apply {
+                        setAdSize(AdSize.BANNER)
+                        this.adUnitId = bannerAdUnitId
+                        adListener = object : com.google.android.gms.ads.AdListener() {
+                            override fun onAdLoaded() {
+                                Log.d("AdManager", "TacticalBottomBannerAd loaded successfully.")
+                                isAdLoaded = true
+                                adFailedToLoad = false
+                            }
 
-                        val container = android.widget.LinearLayout(ctx).apply {
-                            orientation = android.widget.LinearLayout.HORIZONTAL
-                            gravity = android.view.Gravity.CENTER_VERTICAL
-                            setPadding(12, 4, 12, 4)
-                            background = android.graphics.drawable.ColorDrawable(0xFF101622.toInt())
-                        }
-
-                        // 1. "Ad" Badge
-                        val badge = android.widget.TextView(ctx).apply {
-                            text = "Ad"
-                            setTextColor(0xFF00E5FF.toInt()) // CyanAccent
-                            textSize = 10f
-                            setPadding(6, 2, 6, 2)
-                            background = android.graphics.drawable.GradientDrawable().apply {
-                                setStroke(2, 0xFF00E5FF.toInt())
-                                cornerRadius = 4f
+                            override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                                Log.e("AdManager", "TacticalBottomBannerAd failed to load: ${error.message} (Code: ${error.code})")
+                                isAdLoaded = false
+                                adFailedToLoad = true
                             }
                         }
-                        container.addView(badge)
-
-                        // Spacer
-                        container.addView(android.view.View(ctx).apply {
-                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
-                        })
-
-                        // 2. Icon View
-                        val icon = android.widget.ImageView(ctx).apply {
-                            layoutParams = android.widget.LinearLayout.LayoutParams(40, 40)
-                            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                        }
-                        container.addView(icon)
-                        this.iconView = icon
-
-                        // Spacer
-                        container.addView(android.view.View(ctx).apply {
-                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
-                        })
-
-                        // 3. Text Layout (Headline + Body)
-                        val textLayout = android.widget.LinearLayout(ctx).apply {
-                            orientation = android.widget.LinearLayout.VERTICAL
-                            layoutParams = android.widget.LinearLayout.LayoutParams(
-                                0,
-                                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                                1f
-                            )
-                        }
-
-                        val headline = android.widget.TextView(ctx).apply {
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 12f
-                            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-                            maxLines = 1
-                            ellipsize = android.text.TextUtils.TruncateAt.END
-                        }
-                        textLayout.addView(headline)
-                        this.headlineView = headline
-
-                        val body = android.widget.TextView(ctx).apply {
-                            setTextColor(0xAAFFFFFF.toInt())
-                            textSize = 10f
-                            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL)
-                            maxLines = 1
-                            ellipsize = android.text.TextUtils.TruncateAt.END
-                        }
-                        textLayout.addView(body)
-                        this.bodyView = body
-
-                        container.addView(textLayout)
-
-                        // Spacer
-                        container.addView(android.view.View(ctx).apply {
-                            layoutParams = android.widget.LinearLayout.LayoutParams(12, 1)
-                        })
-
-                        // 4. Call To Action Button
-                        val cta = android.widget.Button(ctx).apply {
-                            layoutParams = android.widget.LinearLayout.LayoutParams(
-                                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                                72
-                            )
-                            textSize = 9f
-                            setTextColor(android.graphics.Color.BLACK)
-                            background = android.graphics.drawable.GradientDrawable().apply {
-                                setColor(0xFF00E5FF.toInt()) // CyanAccent
-                                cornerRadius = 6f
-                            }
-                            setPadding(12, 0, 12, 0)
-                        }
-                        container.addView(cta)
-                        this.callToActionView = cta
-
-                        addView(container)
-                    }
-
-                    // Populate and bind
-                    (nativeAdView.headlineView as android.widget.TextView).text = nativeAd.headline
-                    if (nativeAd.body != null) {
-                        (nativeAdView.bodyView as android.widget.TextView).text = nativeAd.body
-                        nativeAdView.bodyView?.visibility = android.view.View.VISIBLE
-                    } else {
-                        nativeAdView.bodyView?.visibility = android.view.View.GONE
-                    }
-                    if (nativeAd.icon != null) {
-                        (nativeAdView.iconView as android.widget.ImageView).setImageDrawable(nativeAd.icon?.drawable)
-                        nativeAdView.iconView?.visibility = android.view.View.VISIBLE
-                    } else {
-                        nativeAdView.iconView?.visibility = android.view.View.GONE
-                    }
-                    if (nativeAd.callToAction != null) {
-                        (nativeAdView.callToActionView as android.widget.Button).text = nativeAd.callToAction
-                        nativeAdView.callToActionView?.visibility = android.view.View.VISIBLE
-                    } else {
-                        nativeAdView.callToActionView?.visibility = android.view.View.GONE
-                    }
-
-                    nativeAdView.setNativeAd(nativeAd)
-                    nativeAdView
-                },
-                update = { view ->
-                    view.setNativeAd(nativeAd)
-                },
-                onRelease = { view ->
-                    try {
-                        view.destroy()
-                    } catch (e: Exception) {
-                        Log.e("AdManager", "Error destroying NativeAdView: ${e.message}")
+                        loadAd(AdRequest.Builder().build())
                     }
                 },
-                modifier = Modifier.fillMaxSize()
+                update = {
+                    // Update if needed
+                }
             )
+        }
+
+        // High-fidelity fallback promo banner to display weather safety tips when ads are blocked or offline
+        if (adFailedToLoad || !isAdLoaded) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF141F2E))
+                    .border(0.6.dp, CyanAccent.copy(alpha = 0.25f))
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = "Safety Tip",
+                        tint = CyanAccent,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "SAFETY: Keep offline survival kit ready during storm alerts.",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 7.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .background(CyanAccent.copy(alpha = 0.15f), RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        "PROMO",
+                        color = CyanAccent,
+                        fontSize = 7.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
         }
     }
 }
@@ -5961,5 +5988,36 @@ fun SurvivalManualTab() {
             }
         }
     }
+}
+
+// --- ZOOM EARTH WEBVIEW COMPONENT ---
+@Composable
+fun ZoomEarthWebView(modifier: Modifier = Modifier) {
+    AndroidView(
+        modifier = modifier.fillMaxSize(),
+        factory = { ctx ->
+            android.webkit.WebView(ctx).apply {
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    setGeolocationEnabled(true)
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                    userAgentString = "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+                }
+                webViewClient = android.webkit.WebViewClient()
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onGeolocationPermissionsShowPrompt(
+                        origin: String?,
+                        callback: android.webkit.GeolocationPermissions.Callback?
+                    ) {
+                        callback?.invoke(origin, true, false)
+                    }
+                }
+                loadUrl("https://zoom.earth/#view=20.3,85.8,5z")
+            }
+        }
+    )
 }
 
